@@ -1,10 +1,13 @@
 from flask import current_app
+from sqlalchemy import text
 
 from server.models.dtos.mapping_dto import TaskDTOs
-from server.models.dtos.validator_dto import LockForValidationDTO, UnlockAfterValidationDTO, MappedTasks, StopValidationDTO
+from server.models.dtos.stats_dto import Pagination
+from server.models.dtos.validator_dto import LockForValidationDTO, UnlockAfterValidationDTO, MappedTasks, StopValidationDTO, InvalidatedTask, InvalidatedTasks
 from server.models.postgis.statuses import ValidatingNotAllowed
-from server.models.postgis.task import Task, TaskStatus, TaskHistory
+from server.models.postgis.task import Task, TaskStatus, TaskHistory, TaskInvalidationHistory, TaskAction, TaskMappingIssue
 from server.models.postgis.utils import NotFound, UserLicenseError, timestamp
+from server.models.postgis.project_info import ProjectInfo
 from server.services.messaging.message_service import MessageService
 from server.services.project_service import ProjectService
 from server.services.stats_service import StatsService
@@ -97,14 +100,17 @@ class ValidatorService:
                 # Parses comment to see if any users have been @'d
                 MessageService.send_message_after_comment(validated_dto.user_id, task_to_unlock['comment'], task.id,
                                                           validated_dto.project_id)
+            if task_to_unlock['new_state'] == TaskStatus.VALIDATED or task_to_unlock['new_state'] == TaskStatus.INVALIDATED:
+                # All mappers get a notification if their task has been validated or invalidated.
+                # Only once if multiple tasks mapped
+                if task.mapped_by not in message_sent_to:
+                    MessageService.send_message_after_validation(task_to_unlock['new_state'], validated_dto.user_id,
+                                                                 task.mapped_by, task.id, validated_dto.project_id)
+                    message_sent_to.append(task.mapped_by)
 
-            if task_to_unlock['new_state'] == TaskStatus.VALIDATED and task.mapped_by not in message_sent_to:
-                # All mappers get a thankyou if their task has been validated :)  Only once if multiple tasks mapped
-                MessageService.send_message_after_validation(validated_dto.user_id, task.mapped_by, task.id,
-                                                             validated_dto.project_id)
-                # Set last_validation_date for the mapper to current date
-                task.mapper.last_validation_date = timestamp()
-                message_sent_to.append(task.mapped_by)
+                if task_to_unlock['new_state'] == TaskStatus.VALIDATED:
+                    # Set last_validation_date for the mapper to current date
+                    task.mapper.last_validation_date = timestamp()
 
             # Update stats if user setting task to a different state from previous state
             prev_status = TaskHistory.get_last_status(project_id, task.id)
@@ -112,7 +118,8 @@ class ValidatorService:
                 StatsService.update_stats_after_task_state_change(validated_dto.project_id, validated_dto.user_id,
                                                                   task_to_unlock['new_state'], task.id)
 
-            task.unlock_task(validated_dto.user_id, task_to_unlock['new_state'], task_to_unlock['comment'])
+            task_mapping_issues = ValidatorService.get_task_mapping_issues(task_to_unlock)
+            task.unlock_task(validated_dto.user_id, task_to_unlock['new_state'], task_to_unlock['comment'], issues=task_mapping_issues)
 
             dtos.append(task.as_dto_with_instructions(validated_dto.preferred_locale))
 
@@ -182,7 +189,8 @@ class ValidatorService:
                 new_status = None
 
             tasks_to_unlock.append(dict(task=task, new_state=new_status,
-                                        comment=unlock_task.comment))
+                                        comment=unlock_task.comment,
+                                        issues=unlock_task.issues))
 
         return tasks_to_unlock
 
@@ -191,6 +199,42 @@ class ValidatorService:
         """ Get all mapped tasks on the project grouped by user"""
         mapped_tasks = Task.get_mapped_tasks_by_user(project_id)
         return mapped_tasks
+
+    @staticmethod
+    def get_user_invalidated_tasks(as_validator, username: str, preferred_locale: str,
+                                   closed=None, project_id=None,
+                                   page=1, page_size=10,
+                                   sort_by="updated_date", sort_direction="desc") -> InvalidatedTasks:
+        """ Get invalidated tasks either mapped or invalidated by the user """
+        user = UserService.get_user_by_username(username)
+        query = TaskInvalidationHistory.query.filter_by(invalidator_id=user.id) if as_validator else \
+                TaskInvalidationHistory.query.filter_by(mapper_id=user.id)
+
+        if closed is not None:
+            query = query.filter_by(is_closed=closed)
+
+        if project_id is not None:
+            query = query.filter_by(project_id=project_id)
+    
+        results = query.order_by(text(sort_by + " " + sort_direction)).paginate(page, page_size, True)
+        project_names = {}
+        invalidated_tasks_dto = InvalidatedTasks()
+        for entry in results.items:
+            dto = InvalidatedTask()
+            dto.task_id = entry.task_id
+            dto.project_id = entry.project_id
+            dto.history_id = entry.invalidation_history_id
+            dto.closed = entry.is_closed
+            dto.updated_date = entry.updated_date
+
+            if not dto.project_id in project_names:
+                project_names[dto.project_id] = ProjectInfo.get_dto_for_locale(dto.project_id, preferred_locale).name
+            dto.project_name = project_names[dto.project_id]
+
+            invalidated_tasks_dto.invalidated_tasks.append(dto)
+
+        invalidated_tasks_dto.pagination = Pagination(results)
+        return invalidated_tasks_dto
 
     @staticmethod
     def invalidate_all_tasks(project_id: int, user_id: int):
@@ -229,3 +273,15 @@ class ValidatorService:
         project.tasks_mapped = (project.total_tasks - project.tasks_bad_imagery)
         project.tasks_validated = project.total_tasks
         project.save()
+
+    @staticmethod
+    def get_task_mapping_issues(task_to_unlock: dict):
+        if task_to_unlock['issues'] is None:
+            return None
+
+        # map ValidationMappingIssue DTOs to TaskMappingIssue instances for any issues
+        # that have count above zero.
+        return list(map(lambda issue_dto: TaskMappingIssue(issue=issue_dto.issue,
+                                                           count=issue_dto.count,
+                                                           mapping_issue_category_id=issue_dto.mapping_issue_category_id),
+                        filter(lambda issue_dto: issue_dto.count > 0, task_to_unlock['issues'])))

@@ -40,6 +40,22 @@
             other: false
         };
 
+        // Editors for mapping
+        vm.mappingEditors = {
+            id: false,
+            josm: false,
+            potlatch2: false,
+            fieldpapers: false
+        };
+
+        // Editors for validation
+        vm.validationEditors = {
+            id: false,
+            josm: false,
+            potlatch2: false,
+            fieldpapers: false
+        };
+
         // Tags
         vm.organisationTags = [];
         vm.campaignsTags = [];
@@ -59,12 +75,24 @@
         // Delete
         vm.showDeleteConfirmationModal = false;
 
+        // Transfer 
+        vm.showTransferConfirmationModal = false;
+        vm.transferProjectTo= []; //it's a list because it uses the tag input
+
+        // Reset
+        vm.showResetConfirmationModal = false;
+
         // Private project/add users
         vm.addUserEnabled = false;
 
         // Error messages
         vm.deleteProjectFail = false;
         vm.deleteProjectSuccess = false;
+        vm.transferProjectFail = false;
+        vm.transferProjectSuccess = false;
+        vm.showTransferEmptyUserError = false;
+        vm.resetProjectFail = false;
+        vm.resetProjectSuccess = false;
         vm.invalidateTasksFail = false;
         vm.invalidateTasksSuccess = false;
         vm.validateTasksFail = false;
@@ -76,6 +104,9 @@
 
         // Form
         vm.form = {};
+
+        // User role
+        vm.userRole = '';
 
         activate();
 
@@ -94,6 +125,7 @@
             if (session){
                 var resultsPromise = accountService.getUser(session.username);
                 resultsPromise.then(function (user) {
+                    vm.userRole = user.role;
                     // Returned the user successfully. Check the user's role
                     if (user.role !== 'PROJECT_MANAGER' && user.role !== 'ADMIN'){
                         $location.path('/');
@@ -162,6 +194,8 @@
             // Prepare the data for sending to API by removing any locales with no fields
             if (!requiredFieldsMissing && vm.editForm.$valid){
                 vm.project.mappingTypes = getMappingTypesArray();
+                vm.project.mappingEditors = getMappingEditorsArray();
+                vm.project.validationEditors = getValidationEditorsArray();
                 vm.project.josmPreset = vm.josmPreset;
                 for (var i = 0; i < vm.project.projectInfoLocales.length; i++){
                     var info = vm.project.projectInfoLocales[i];
@@ -341,6 +375,131 @@
         };
 
         /**
+         * Set the transfer confirmation modal to visible/invisible
+         * @param showModal
+         */
+        vm.showTransferConfirmation = function(showModal){
+            if (vm.transferProjectTo.length){
+                vm.showTransferConfirmationModal = showModal;
+                vm.showTransferEmptyUserError = false;
+                if (!showModal && vm.transferProjectSuccess){
+                    $location.path('/');
+                }
+            } else {
+                vm.showTransferEmptyUserError = true;
+            }
+        };
+
+        /**
+         * Transfer a project
+         */
+        vm.transferProject = function(){
+            vm.transferProjectFail = false;
+            vm.transferProjectSuccess = false;
+            var resultsPromise = projectService.transferProject(vm.project.projectId, vm.transferProjectTo[0].text);
+            resultsPromise.then(function () {
+                // Project deleted successfully
+                vm.transferProjectFail = false;
+                vm.transferProjectSuccess = true;
+                // Reset the page elements
+                getProjectMetadata(vm.project.projectId);
+            }, function(){
+                // Project not deleted successfully
+                vm.transferProjectFail = true;
+                vm.transferProjectSuccess = false;
+            });
+        };
+
+        /**
+         * Set the map confirmation modal to visible/invisible
+         * @param showModal
+         */
+        vm.showMapConfirmation = function(showModal){
+            vm.showMapConfirmationModal = showModal;
+        };
+
+        /**
+         * Map all tasks on a project
+         */
+        vm.mapAllTasks = function(){
+            vm.mapInProgress = true;
+            vm.mapTasksFail = false;
+            vm.mapTasksSuccess = false;
+            var resultsPromise = projectService.mapAllTasks(vm.project.projectId);
+            resultsPromise.then(function(){
+                // Tasks mapped successfully
+                vm.mapTasksFail = false;
+                vm.mapTasksSuccess = true;
+                vm.mapInProgress = false;
+            }, function(){
+                // Tasks not mapped successfully
+                vm.mapTasksFail = true;
+                vm.mapTasksSuccess = false;
+                vm.mapInProgress = false;
+            })
+        };
+
+        /**
+         * Set the reset bad imagery confirmation modal to visible/invisible
+         * @param showModal
+         */
+        vm.showResetBadImageryConfirmation = function(showModal){
+            vm.showResetBadImageryConfirmationModal = showModal;
+        };
+
+        /**
+         * Reset all bad imagery tasks on a project
+         */
+        vm.resetBadImageryTasks = function(){
+            vm.resetBadImageryInProgress = true;
+            vm.resetBadImageryFail = false;
+            vm.resetBadImagerySuccess = false;
+            var resultsPromise = projectService.resetBadImageryTasks(vm.project.projectId);
+            resultsPromise.then(function(){
+                // Tasks mapped successfully
+                vm.resetBadImageryFail = false;
+                vm.resetBadImagerySuccess = true;
+                vm.resetBadImageryInProgress = false;
+            }, function(){
+                // Tasks not mapped successfully
+                vm.resetBadImageryFail = true;
+                vm.resetBadImagerySuccess = false;
+                vm.resetBadImageryInProgress = false;
+            })
+        };
+
+        /*
+         * Set the reset confirmation modal to visible/invisible
+         * @param showModal
+         */
+        vm.showResetConfirmation = function(showModal){
+            vm.showResetConfirmationModal = showModal;
+            if (!showModal && vm.resetProjectSuccess){
+                $location.path('/');
+            }
+        };
+
+        /**
+         * Reset a project
+         */
+        vm.resetProject = function(){
+            vm.resetProjectFail = false;
+            vm.resetProjectSuccess = false;
+            var resultsPromise = projectService.resetProject(vm.project.projectId);
+            resultsPromise.then(function () {
+                // Project reset successfully
+                vm.resetProjectFail = false;
+                vm.resetProjectSuccess = true;
+                // Reset the page elements
+                getProjectMetadata(vm.project.projectId);
+            }, function(){
+                // Project not reset successfully
+                vm.resetProjectFail = true;
+                vm.resetProjectSuccess = false;
+            });
+        };
+
+        /**
          * Set the invalidate confirmation modal to visible/invisible
          * @param showModal
          */
@@ -399,6 +558,27 @@
         };
 
         /**
+         * Reset all tasks on a project
+         */
+        vm.resetAllTasks = function(){
+            vm.resetInProgress = true;
+            vm.resetTasksFail = false;
+            vm.resetTasksSuccess = false;
+            var resultsPromise = projectService.resetAllTasks(vm.project.projectId);
+            resultsPromise.then(function(){
+                // Tasks reset successfully
+                vm.resetTasksFail = false;
+                vm.resetTasksSuccess = true;
+                vm.resetInProgress = false;
+            }, function(){
+                // Tasks not reset successfully
+                vm.resetTasksFail = true;
+                vm.resetTasksSuccess = false;
+                vm.resetInProgress = false;
+            })
+        };
+
+        /**
          * Set the show message contributors modal to visible/invisible
          */
         vm.showMessageContributors = function(showModal){
@@ -452,7 +632,7 @@
          * @param searchValue
          */
         vm.getUser = function(searchValue){
-            var resultsPromise = userService.searchUser(searchValue);
+            var resultsPromise = userService.searchUser(searchValue, vm.project.id);
             return resultsPromise.then(function (data) {
                 // On success
                 return data.usernames;
@@ -509,7 +689,10 @@
             vm.descriptionMissing = false;
             vm.shortDescriptionMissing = false;
             vm.instructionsMissing = false;
-            vm.instructionsMissing = false;
+            vm.mapperLevelMissing = false;
+            vm.organisationTagMissing = false;
+            vm.mappingTypeMissing = false;
+
             for (var i = 0; i < vm.project.projectInfoLocales.length; i++) {
                 if (vm.project.projectInfoLocales[i].locale === vm.project.defaultLocale) {
                     // check that the name, short description, description and instructions are populated for the default locale
@@ -526,10 +709,15 @@
                     if (typeof info.instructions == 'undefined' || info.instructions === ''){
                         vm.instructionsMissing = true;
                     }
+                    if (typeof vm.projectOrganisationTag == 'undefined' || vm.projectOrganisationTag.length === 0 ){
+                        vm.organisationTagMissing = true;
+                    }
+
                     break;
                 }
             }
-            var somethingMissing = vm.name || vm.descriptionMissing || vm.shortDescriptionMissing || vm.instructionsMissing;
+            vm.mappingTypeMissing = getMappingTypesArray().length === 0;
+            var somethingMissing = vm.name || vm.descriptionMissing || vm.shortDescriptionMissing || vm.instructionsMissing || vm.organisationTagMissing || vm.mappingTypeMissing;
             return somethingMissing;
         }
 
@@ -675,6 +863,8 @@
                     vm.project.dueDate = new Date(vm.project.dueDate);
                 }
                 populateTypesOfMapping();
+                populateEditorsForMapping();
+                populateEditorsForValidation();
                 addAOIToMap();
                 addPriorityAreasToMap();
                 if (vm.project.organisationTag) {
@@ -811,6 +1001,73 @@
                 mappingTypesArray.push("OTHER");
             }
             return mappingTypesArray;
+        }
+
+        /**
+         * Populate the mapping editor fields by checking which tags exist
+         * in the mappingEditors array on the project
+         */
+        function populateEditorsForMapping(){
+            if (vm.project.mappingEditors) {
+                vm.mappingEditors.id = vm.project.mappingEditors.indexOf("ID") != -1;
+                vm.mappingEditors.josm = vm.project.mappingEditors.indexOf("JOSM") != -1;
+                vm.mappingEditors.potlatch2 = vm.project.mappingEditors.indexOf("POTLATCH_2") != -1;
+                vm.mappingEditors.fieldpapers = vm.project.mappingEditors.indexOf("FIELD_PAPERS") != -1;
+            }
+        }
+
+        /**
+         * Get map editors in array
+         */
+        function getMappingEditorsArray(){
+            var mappingEditorsArray = [];
+            if (vm.mappingEditors.id){
+                mappingEditorsArray.push("ID");
+            }
+            if (vm.mappingEditors.josm){
+                mappingEditorsArray.push("JOSM");
+            }
+            if (vm.mappingEditors.potlatch2) {
+                mappingEditorsArray.push("POTLATCH_2");
+            }
+            if (vm.mappingEditors.fieldpapers){
+                mappingEditorsArray.push("FIELD_PAPERS");
+            }
+            return mappingEditorsArray;
+        }
+
+
+        /**
+         * Populate the validation editor fields by checking which tags exist
+         * in the validationEditors array on the project
+         */
+        function populateEditorsForValidation(){
+            if (vm.project.validationEditors) {
+                vm.validationEditors.id = vm.project.validationEditors.indexOf("ID") != -1;
+                vm.validationEditors.josm = vm.project.validationEditors.indexOf("JOSM") != -1;
+                vm.validationEditors.potlatch2 = vm.project.validationEditors.indexOf("POTLATCH_2") != -1;
+                vm.validationEditors.fieldpapers = vm.project.validationEditors.indexOf("FIELD_PAPERS") != -1;
+            }
+        }
+
+        /**
+         * Get validate editors in array
+         */
+        function getValidationEditorsArray(){
+            var validationEditorsArray = [];
+            if (vm.validationEditors.id){
+                validationEditorsArray.push("ID");
+            }
+            if (vm.validationEditors.josm){
+                validationEditorsArray.push("JOSM");
+            }
+            if (vm.validationEditors.potlatch2) {
+                validationEditorsArray.push("POTLATCH_2");
+            }
+            if (vm.validationEditors.fieldpapers){
+                validationEditorsArray.push("FIELD_PAPERS");
+            }
+            return validationEditorsArray;
         }
 
          /**

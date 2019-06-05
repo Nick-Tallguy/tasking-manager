@@ -4,6 +4,7 @@ var gulp = require('gulp'),
     config = require('gulp-ng-config'),
     cssnano = require('gulp-cssnano'),
     del = require('del'),
+    eslint = require("gulp-eslint"),
     modRewrite = require('connect-modrewrite'),
     processhtml = require('gulp-processhtml'),
     runSequence = require('run-sequence'),
@@ -20,13 +21,19 @@ var paths = {
     locale: ['locale/*.json']
 };
 
+gulp.task('eslint', function () {
+  return gulp.src('**/*.js')
+    .pipe(eslint())
+    .pipe(eslint.format('stylish'));
+});
+
 gulp.task('browser-sync', function () {
     /** Runs the web app currently under development and watches the filesystem for changes */
 
         // Specify list of files to watch for changes, apparently reload method doesn't work on Windows */
     var filesToWatch = [
-            './**/*.html',
-            './**/*.js'
+            './app/**/*.html',
+            './app/**/*.js'
         ];
 
     // Create a rewrite rule that redirects to index.html to let Angular handle the routing

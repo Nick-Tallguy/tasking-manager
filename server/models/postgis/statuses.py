@@ -16,6 +16,12 @@ class ProjectPriority(Enum):
     LOW = 3
 
 
+class TaskCreationMode(Enum):
+    """ Enum to describe task creation mode """
+    GRID = 0
+    ARBITRARY = 1
+
+
 class TaskStatus(Enum):
     """ Enum describing available Task Statuses """
     READY = 0
@@ -25,6 +31,7 @@ class TaskStatus(Enum):
     VALIDATED = 4
     INVALIDATED = 5
     BADIMAGERY = 6  # Task cannot be mapped because of clouds, fuzzy imagery
+    SPLIT = 7       # Task has been split
 
 
 class MappingLevel(Enum):
@@ -67,3 +74,11 @@ class UserRole(Enum):
     ADMIN = 1
     PROJECT_MANAGER = 2
     VALIDATOR = 4
+
+
+class Editors(Enum):
+    """ Enum describing the possible editors for projects """
+    ID = 0
+    JOSM = 1
+    POTLATCH_2 = 2
+    FIELD_PAPERS = 3

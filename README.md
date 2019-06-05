@@ -1,137 +1,54 @@
-# HOT tasking-manager
+# Tasking Manager
 
-## Intro
-The app is split into a Client (AngularJS) and Server (Python) structure.  Each can be developed independently of each other.  See below for instructions on how to set up your deve environment.
+The Tasking Manager is the tool for any organised OpenStreetMap editing and coordination.
 
-[See our FAQ if you hit any problems getting setup](https://github.com/hotosm/tasking-manager/wiki/Dev-Environment-FAQ)
+The Tasking Manager is Free and Open Source Software, feel free to use the code and set up your own instance. It has been initially designed and built by and for the [Humanitarian OpenStreetMap Team](https://www.hotosm.org/), and is nowadays used by many other communities and organizations. The purpose of the tool is to divide up a mapping job into smaller tasks that can be completed rapidly. It shows which areas need to be mapped and which areas need the mapping validated. You can see the tool in action: log into the widely used [HOT Tasking Manager](https://tasks.hotosm.org/) and start mapping.
 
+[<img src="screenshot.jpg" />](./docs/files/screenshot.jpg)
 
-## Client Development
-### Global Dependencies
-Following must be available locally:
+## Installation
 
-* NodeJS LTS v6+ [NodeJS LTS install here](https://nodejs.org/en/)
-* [Gulp](http://gulpjs.com/) is used to run and build the app, install globally as follows:
-    * ```npm install gulp -g```
+**Get the code**
 
-### App Dependencies
-You will now have to install all the app dependencies using [NPM](https://www.npmjs.com/)
+`git clone https://github.com/hotosm/tasking-manager.git`.
 
-```
-cd client
-npm install
-```
+**Configure**
 
-### Running Locally
-If you plan to do client development you can run the app using gulp, without having to worry too much about the server. If you want to point the client at a non-local API (e.g. a staging environment), you'll have to change the environment config for development in client/taskingmanager.config.json.
+* Copy the example configuration file to start your own configuration: `cp example.env tasking-manager.env`.
+* Adjust the `tasking-manager.env` configuration file to fit your configuration.
 
-```
-cd client   [if not already in client]
-gulp run
-```
+**Connect with OpenStreetMap**
 
-### Running Unit Tests
-The client has a suite of [Jasmine](https://jasmine.github.io/) Unit Tests, that you can run using [Karma](https://karma-runner.github.io/1.0/index.html) as follows
+The Tasking Manager uses OpenStreetMap accounts for users to login. 
 
-```
- cd client    [if not already in client]
- karma start ..\tests\client\karma.conf.js
-```
+In order to configure this connection you have to go to `https://www.openstreetmap.org/user/<Your_OSM_UserName>/oauth_clients/new` and fill in the form:
 
-## Server Development
-### Dependencies
-Following must be available locally:
+<img width="300" alt="Required OSM OAuth settings" src="docs/assets/osm-oauth-settings.jpg">
 
-* Python 3.6 - [Python 3.6 install here](https://www.python.org/downloads/)
+Afterwards copy the consumer key and secret from OpenStreetMap into your configuration file `tasking-manager.env`, and set the two variables: `TM_CONSUMER_KEY` and `TM_CONSUMER_SECRET`.
 
-### Build the Server
-* Create a Python Virtual Environment, using Python 3.6:
-    * ```python -m venv ./venv```
-* Activate your virtual environment and install dependencies:
-    * Linux/Mac:
-        * ```. ./venv/bin/activate```
-        * ```pip install -r requirements.txt```
-    * Windows (use installer because of precompiled libs):
-        * ```.\venv\scripts\activate```
-        * ```.\devops\win\install.bat```
+**Run the Tasking Manager**
 
-### Environment vars:
-As the project is open source we have to keep secrets out of the repo.  You will need to setup the following env vars locally:
+The **easiest way** to run the Tasking Manager requires [Docker](https://docs.docker.com/get-started/) and [Docker Compose](https://docs.docker.com/compose/) to be installed on your system.  Afterwards you'll just need:
 
-* **TM_DB** - This is the for the PostGIS connection string.  If you can't access an existing DB refer to DevOps page to [set up a local DB in Docker](https://github.com/hotosm/tasking-manager/wiki/Dev-Ops#creating-a-local-postgis-database-with-docker)
-* **TM_SECRET** - This is secret key for the TM app used by itsdangerous and flask-oauthlib for entropy
-* **TM_CONSUMER_KEY** - This is the OAUTH Consumer Key used for authenticating the Tasking Manager App in OSM
-* **TM_CONSUMER_SECRET** - This is the OAUTH Consumer Secret used for authenticating the Tasking Manager App in OSM
-* **TM_SMTP_HOST** - The hostname for the SMTP server that is used to send email alerts
-* **TM_SMTP_USER** - The user for the SMTP server that is used to send email alerts
-* **TM_SMTP_PASSWORD** - The password for the SMTP server that is used to send email alerts
+* One command to get everything together and start the Tasking Manager: `docker-compose up -d`
+* Visit with your browser `http://127.0.0.1:5000`
 
-* Linux/Mac
-    * (It is strongly recommended to set these within your .bash_profile so they are available to all processes )
-    * ```export TM_DB=postgresql://USER:PASSWORD@HOST/DATABASE```
-    * ```export TM_SECRET=secret-key-here```
-    * ```export TM_CONSUMER_KEY=oauth-consumer-key-goes-here```
-    * ```export TM_CONSUMER_SECRET=oauth-consumer-secret-key-goes-here```
-    * ```export TM_SMTP_HOST=smtp-server-host-here```
-    * ```export TM_SMTP_USER=smtp-server-user-here```
-    * ```export TM_SMTP_PASSWORD=smtp-server-password-here```
-* Windows:
-    * ```setx TM_DB "postgresql://USER:PASSWORD@HOST/DATABASE"```
-    * ```setx TM_SECRET "secret-key-here"```
-    * ```setx TM_CONSUMER_KEY "oauth-consumer-key-goes-here"```
-    * ```setx TM_CONSUMER_SECRET "oauth-consumer-secret-key-goes-here"```
-    * ```setx TM_SMTP_HOST "smtp-server-host-here"```
-    * ```setx TM_SMTP_USER "smtp-server-user-here"```
-    * ```setx TM_SMTP_PASSWORD "smtp-server-password-here"```
+For stopping this command do the job: `docker-compose stop`
+And you can check the logs with `docker-compose logs -f`
 
-### Creating the DB
-We use [Flask-Migrate](https://flask-migrate.readthedocs.io/en/latest/) to create the database from the migrations directory.  If you can't access an existing DB refer to DevOps page to [set up a local DB in Docker](https://github.com/hotosm/tasking-manager/wiki/Dev-Ops#creating-a-local-postgis-database-with-docker) Create the database as follows:
+**Alternatively** you can review how to install a [development setup](./docs/setup-development.md).
 
-```
-python manage.py db upgrade
-```
+## Get involved!
 
-### Running Locally
+* Review our [Contributor guidelines](./docs/contributing.md)
+* And help us to [translate the TM](./docs/contributing-translation.md)
+* Come, attend the [working group meetings](./docs/working-group.md)
+* Make sure you are aware of our [Code of Conduct](./docs/code_of_conduct.md)
 
-#### API Development only
-If you plan to only work on the API you don't need to build the client and can run as follows:
+## Developers, developers, developers
 
-* Run the server:
-    * ``` python manage.py runserver -d -r```
-* Point your browser to:
-    * [http://localhost:5000/api-docs](http://localhost:5000/api-docs)
-
-#### Seeing the client
-If you want to see the client you will need to follow all the instruction in **Client Development** section then build the client as follows:
-
-* Build the client using gulp:
-    * ```cd client```
-    * ```gulp build```
-* You can now run the server as above from the root dir:
-    * ```cd ..```
-    * ``` python manage.py runserver -d -r```
-* Point your browser to:
-    * [http://localhost:5000](http://localhost:5000)
-
-### Running Unit Tests
-The project includes a suite of Unit and Integration tests that you should run after any changes
-
-```
-python -m unittest discover tests/server
-```
-
-## Dev Ops
-
-### Server Config
-
-#### Environment Vars
-
-On boot the Tasking Manager App will look for the following environment vars:
-
-* **TASKING_MANAGER_ENV** - Allows you to specify which config to load from ./server/config.py  Acceptable values:
-    * **Dev** - This is the default
-    * **Staging** - Use this for your staging/test environment
-    * **Prod** - Use this for your production environment
-
-## Localisation
-Please see the [Localisation Wiki](https://github.com/hotosm/tasking-manager/wiki/Localisation) for more details.
+* See how you can [customize your instance of the TM](./docs/customize.md)
+* Learn how to [setup the TM for development](./docs/setup-development.md)
+* Feel free to submit [pull requests](https://github.com/hotosm/tasking-manager/pulls)!
+* Need an upgrade? Check out the [Migration from TM2 to TM3](./docs/migration-tm2-to-tm3.md)

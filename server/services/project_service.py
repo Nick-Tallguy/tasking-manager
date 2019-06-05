@@ -6,6 +6,7 @@ from server.models.dtos.project_dto import ProjectDTO, LockedTasksForUser, Proje
 from server.models.postgis.project import Project, ProjectStatus, MappingLevel
 from server.models.postgis.statuses import MappingNotAllowed, ValidatingNotAllowed
 from server.models.postgis.task import Task
+from server.models.postgis.task_annotation import TaskAnnotation
 from server.models.postgis.utils import NotFound
 from server.services.users.user_service import UserService
 
@@ -35,7 +36,7 @@ class ProjectService:
         Task.auto_unlock_tasks(project_id)
 
     @staticmethod
-    def get_project_dto_for_mapper(project_id, locale='en') -> ProjectDTO:
+    def get_project_dto_for_mapper(project_id, locale='en', abbrev=False) -> ProjectDTO:
         """
         Get the project DTO for mappers
         :param project_id: ID of the Project mapper has requested
@@ -43,7 +44,7 @@ class ProjectService:
         :raises ProjectServiceError, NotFound
         """
         project = ProjectService.get_project_by_id(project_id)
-        return project.as_dto_for_mapping(locale)
+        return project.as_dto_for_mapping(locale, abbrev)
 
     @staticmethod
     def get_project_tasks(project_id):

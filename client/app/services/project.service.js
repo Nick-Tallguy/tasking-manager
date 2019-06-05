@@ -39,13 +39,18 @@
             createProject: createProject,
             setAOI: setAOI,
             getAOI: getAOI,
+            getAOIServer: getAOIServer,
             splitTasks: splitTasks,
             getProject: getProject,
             getProjectMetadata: getProjectMetadata,
             updateProject: updateProject,
             deleteProject: deleteProject,
+            transferProject: transferProject,
+            mapAllTasks: mapAllTasks,
+            resetBadImageryTasks: resetBadImageryTasks,
             invalidateAllTasks: invalidateAllTasks,
             validateAllTasks: validateAllTasks,
+            resetAllTasks: resetAllTasks,
             getCommentsForProject: getCommentsForProject,
             userCanMapProject: userCanMapProject,
             userCanValidateProject: userCanValidateProject,
@@ -108,7 +113,7 @@
                         'x': x,
                         'y': y,
                         'zoom': zoomLevel,
-                        'splittable': true
+                        'isSquare': true
                     });
                     taskFeatures.push(taskFeature);
                 }
@@ -209,6 +214,27 @@
          */
         function getAOI() {
             return aoi;
+        }
+
+        function getAOIServer(id) {
+
+            // Returns a promise
+            return $http({
+                method: 'GET',
+                url: configService.tmAPI + '/project/' + id + '/aoi?as_file=false',
+                headers: {
+                    'Content-Type': 'application/json; charset=UTF-8'
+                }
+            }).then(function successCallback(response) {
+                // this callback will be called asynchronously
+                // when the response is available
+                return response.data;
+            }, function errorCallback() {
+                // called asynchronously if an error occurs
+                // or server returns response with an error status.
+                return $q.reject("error");
+            });
+
         }
 
         /**
@@ -382,16 +408,17 @@
         /**
          * Get a project JSON
          * @param id - project id
+         * @param abbreviated - abbreviated project info or not
          * @returns {!jQuery.Promise|*|!jQuery.deferred|!jQuery.jqXHR}
          */
-        function getProject(id) {
+        function getProject(id, abbreviated) {
 
             var preferredLanguage = languageService.getLanguageCode();
 
             // Returns a promise
             return $http({
                 method: 'GET',
-                url: configService.tmAPI + '/project/' + id,
+                url: configService.tmAPI + '/project/' + id + '?abbreviated=' + abbreviated,
                 headers: {
                     'Content-Type': 'application/json; charset=UTF-8',
                     'Accept-Language': preferredLanguage
@@ -479,6 +506,75 @@
         }
 
         /**
+         * Transfers a project to another user
+         * @param id
+         * @param user_id
+         * @returns {*|!jQuery.Promise|!jQuery.deferred|!jQuery.jqXHR}
+         */
+        function transferProject(id, username) {
+
+            // Returns a promise
+            return $http({
+                method: 'POST',
+                data: {username: username},
+                url: configService.tmAPI + '/admin/project/' + id + '/transfer',
+                headers: authService.getAuthenticatedHeader()
+            }).then(function successCallback(response) {
+                // this callback will be called asynchronously
+                // when the response is available
+                return response.data;
+            }, function errorCallback() {
+                // called asynchronously if an error occurs
+                // or server returns response with an error status.
+                return $q.reject("error");
+            })
+        }
+
+        /**
+         * Map all tasks on the project
+         * @param projectId
+         * @returns {!jQuery.deferred|*|!jQuery.jqXHR|!jQuery.Promise}
+         */
+        function mapAllTasks(projectId) {
+            // Returns a promise
+            return $http({
+                method: 'POST',
+                url: configService.tmAPI + '/admin/project/' + projectId + '/map-all',
+                headers: authService.getAuthenticatedHeader()
+            }).then(function successCallback(response) {
+                // this callback will be called asynchronously
+                // when the response is available
+                return response.data;
+            }, function errorCallback() {
+                // called asynchronously if an error occurs
+                // or server returns response with an error status.
+                return $q.reject("error");
+            });
+        }
+
+        /**
+         * Mark all bad imagery tasks ready for mapping
+         * @param projectId
+         * @returns {!jQuery.deferred|*|!jQuery.jqXHR|!jQuery.Promise}
+         */
+        function resetBadImageryTasks(projectId) {
+            // Returns a promise
+            return $http({
+                method: 'POST',
+                url: configService.tmAPI + '/admin/project/' + projectId + '/reset-all-badimagery',
+                headers: authService.getAuthenticatedHeader()
+            }).then(function successCallback(response) {
+                // this callback will be called asynchronously
+                // when the response is available
+                return response.data;
+            }, function errorCallback() {
+                // called asynchronously if an error occurs
+                // or server returns response with an error status.
+                return $q.reject("error");
+            });
+        }
+
+        /**
          * Invalidate all tasks on the project
          * @param projectId
          * @returns {!jQuery.deferred|*|!jQuery.jqXHR|!jQuery.Promise}
@@ -510,6 +606,28 @@
             return $http({
                 method: 'POST',
                 url: configService.tmAPI + '/admin/project/' + projectId + '/validate-all',
+                headers: authService.getAuthenticatedHeader()
+            }).then(function successCallback(response) {
+                // this callback will be called asynchronously
+                // when the response is available
+                return response.data;
+            }, function errorCallback() {
+                // called asynchronously if an error occurs
+                // or server returns response with an error status.
+                return $q.reject("error");
+            });
+        }
+
+        /**
+         * Resets all tasks on the project
+         * @param projectId
+         * @returns {!jQuery.deferred|*|!jQuery.jqXHR|!jQuery.Promise}
+         */
+        function resetAllTasks(projectId) {
+            // Returns a promise
+            return $http({
+                method: 'POST',
+                url: configService.tmAPI + '/admin/project/' + projectId + '/reset-all',
                 headers: authService.getAuthenticatedHeader()
             }).then(function successCallback(response) {
                 // this callback will be called asynchronously
@@ -589,12 +707,17 @@
          * @param enforceValidateRole*
          * @returns {boolean}
          */
-        function userCanValidateProject(userRole, enforceValidateRole) {
+        function userCanValidateProject(userRole, mappingLevel, enforceValidateRole, allowNonBeginners) {
+            var userCanValidate = true
             if (enforceValidateRole) {
                 var validatorRoles = ['ADMIN', 'PROJECT_MANAGER', 'VALIDATOR'];
-                return validatorRoles.indexOf(userRole) != -1;
+                userCanValidate = (validatorRoles.indexOf(userRole) != -1);
+            } 
+            if (allowNonBeginners) {
+                var allowedLevels = ['INTERMEDIATE','ADVANCED']
+                userCanValidate = (allowedLevels.indexOf(mappingLevel) != -1);
             }
-            return true;
+            return userCanValidate;
         }
 
         /**

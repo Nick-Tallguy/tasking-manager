@@ -42,8 +42,15 @@
                 <div class="inner">
                     <div class="profile-container">
                         <div class="details">
-                            <div>
-                                <h4>{{ profileCtrl.username }}'s {{ 'Progress' | translate }}</h4>
+                            <div class="mapping-progress">
+                                <h4>
+                                  <span class="header">{{ profileCtrl.username }}'s {{ 'Progress' | translate }}</span>
+                                  <mapper-level-indicator ng-if="profileCtrl.userDetails.mappingLevel"
+                                                          username="{{ profileCtrl.username }}"
+                                                          level="{{ profileCtrl.userDetails.mappingLevel }}"
+                                                          label="true"></mapper-level-indicator>
+                                </h4>
+                                <mapper-encouragement></mapper-encouragement>
                                 <div ng-show="profileCtrl.mapperLevelIntermediate > profileCtrl.osmUserDetails.changesetCount">
                                     <span class="label">{{ profileCtrl.mapperLevelIntermediate - profileCtrl.osmUserDetails.changesetCount }} {{ 'OSM changeset(s) to intermediate mapper' | translate }}</span>
                                     <uib-progressbar value="profileCtrl.osmUserDetails.changesetCount" max="profileCtrl.mapperLevelIntermediate"></uib-progressbar>
@@ -59,9 +66,15 @@
                                 <hr/>
                             </div>
                             <div>
+                                <h4>Stats</h4>
+                                <span>{{ 'Time Spent Mapping (on this instance)' | translate }}</span>
+                                <span class="pull-right">{{ profileCtrl.userStats.timeSpentMapping }}</span>
+                                <hr/>
+                            </div>
+                            <div>
                                 <h4>OSM details</h4>
                                 <div ng-show="profileCtrl.osmUserDetails">
-                                    <p>{{ 'Joined OSM' | translate }} <span am-time-ago="profileCtrl.osmUserDetails.accountCreated | amUtc | amLocal"></span></p>
+                                    <p>{{ 'Joined OSM' | translate }} <span tm-timestamp="profileCtrl.osmUserDetails.accountCreated"></span></p>
                                     <p>{{ profileCtrl.osmUserDetails.changesetCount}} {{ 'Total OSM changesets' | translate }}</p>
                                 </div>
                                 <p>
@@ -84,6 +97,7 @@
                                         {{ 'OSM heat map' | translate }}
                                     </a>
                                 </p>
+                                <hr/>
                             </div>
                         </div>
                         <div class="roles pull-right">
@@ -92,7 +106,7 @@
                                     <li>
                                         <label class="form__label"
                                                ng-show="profileCtrl.userDetails.emailAddress || profileCtrl.editDetails">
-                                            Email (only visible to you):
+                                            {{ 'Email (only visible to you):' | translate }}
                                         </label>
                                         <span ng-hide="profileCtrl.editDetails">
                                             {{ profileCtrl.userDetails.emailAddress }}
@@ -107,7 +121,7 @@
                                         </span>
                                         <span ng-show="profileCtrl.userDetails.emailAddress && !profileCtrl.userDetails.isEmailVerified && !profileCtrl.editDetails">
                                             <button class="button button--achromic button--small"
-                                                    ng-click="profileCtrl.resendVerificationEmail()">Resend validation email</button>
+                                                    ng-click="profileCtrl.resendVerificationEmail()">{{ 'Resend validation email' | translate }}</button>
                                         </span>
                                     </li>
                                     <li>
@@ -160,11 +174,17 @@
                                     </li>
                                 </ul>
                                 <div ng-show="profileCtrl.userDetails.username === profileCtrl.currentlyLoggedInUser.username">
+                                    <div ng-show="!profileCtrl.userDetails.emailAddress && !profileCtrl.editDetails"
+                                         class="important-message">
+                                      <span class="important-message__icon fa fa-exclamation-circle"></span>
+                                      {{ "Please provide an email address to receive notifications about your mapping" | translate }}
+                                    </div>
+
                                     <button class="button button--achromic" type="button"
                                             ng-click="profileCtrl.editDetails = !profileCtrl.editDetails"
                                             ng-show="!profileCtrl.editDetails">
                                         <i class="hot-ds-icon-pencil" title="Edit Twitter URL"></i>
-                                        <span>{{ 'Add/edit contact details' | translate}}</span>
+                                        <span>{{ 'Add/edit contact details' | translate }}</span>
                                     </button>
                                     <button class="button button--achromic" type="button"
                                             ng-click="profileCtrl.setContactDetails()"
@@ -208,7 +228,7 @@
                                             </button>
                                             <button class="button button--achromic"
                                                     ng-class="profileCtrl.userDetails.role === 'PROJECT_MANAGER'? 'button--active' : ''"
-                                                    ng-hide="profileCtrl.userDetails.role === 'ADMIN' && profileCtrl.currentlyLoggedInUser.role === 'PROJECT_MANAGER'"
+                                                    ng-show="profileCtrl.currentlyLoggedInUser.role === 'ADMIN'"
                                                     ng-click="profileCtrl.setRole('PROJECT_MANAGER')">{{ 'Project Manager' | translate }}
                                             </button>
                                             <button class="button button--achromic"
@@ -255,6 +275,16 @@
                                     <p ng-show="profileCtrl.errorSetLevel" class="error">{{ 'An error occurred when setting the level.' | translate }}</p>
                                 </div>
                             </div>
+                            <div>
+                                <h4>{{ 'Expert Mode' | translate }}</h4>
+                                <p>{{ 'Expert mode makes advanced and experimental features available. Most users should leave this off.' | translate }}</p>
+                                <label class="form__option">
+                                    <i ng-show="profileCtrl.savingExpertMode" class="fa fa-spinner fa-spin fa-lg fa-fw"></i>
+                                    <input ng-show="!profileCtrl.savingExpertMode" type="checkbox" ng-model="profileCtrl.userDetails.isExpert" ng-change="profileCtrl.setExpertMode(profileCtrl.userDetails.isExpert)"/>
+                                    {{ 'Expert Mode' | translate }}
+                                </label>
+                                <p ng-show="profileCtrl.errorSetExpertMode" class="error">{{ 'An error occurred when altering expert mode setting.' | translate }}</p>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -287,13 +317,68 @@
                                 <td>{{ project.tasksMapped }}</td>
                                 <td>{{ project.tasksValidated }}</td>
                                 <td>{{ project.status }}</td>
-                                <td><a href="" ng-click="profileCtrl.viewOverpassTurbo(project.aoi)">{{ 'View in Overpass Turbo' | translate }}</a></td>
+                                <td><a href="" ng-click="profileCtrl.viewOverpassTurbo(project.projectId)">{{ 'View in Overpass Turbo' | translate }}</a></td>
                             </tr>
                             </tbody>
                         </table>
                     </div>
                     <div>
                         <div id="map" class="map-container"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="section-container">
+            <div class="section__body section__body--secondary">
+                <div class="inner">
+                    <h2>{{ profileCtrl.isOwnProfile() ? ('Your' | translate) : profileCtrl.username + "'s" }} {{ 'Invalidated Tasks' | translate
+ }}</h2>
+                    <div class="profile-invalidated-tasks-list">
+                        <table ng-table="profileCtrl.invalidatedTasksAsMapperTableSettings" class="table">
+                            <tr ng-repeat="invalidatedTask in $data">
+                                <td title="'Project' | translate" sortable="'projectId'">
+                                    <a ng-href="/project/{{ invalidatedTask.projectId }}">
+                                        {{ invalidatedTask.projectName }}
+                                    </a>
+                                </td>
+                                <td title="'Task' | translate">
+                                  <a ng-href="/project/{{ invalidatedTask.projectId }}?task={{ invalidatedTask.taskId }}&history={{ invalidatedTask.historyId }}">
+                                        {{ 'Task' | translate }} {{ invalidatedTask.taskId }}
+                                    </a>
+                                </td>
+                                <td title="'State' | translate" filter="{closed: 'select'}"
+                                    filter-data="profileCtrl.mapperClosedFilterOptions">
+                                    {{ (invalidatedTask.closed ? 'Closed' : 'Open') | translate }}
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="section-container">
+            <div class="section__body">
+                <div class="inner">
+                  <h2>{{ 'Tasks' | translate }} {{ profileCtrl.isOwnProfile() ? 'You' : profileCtrl.username }} {{ 'Invalidated' | translate}}</h2>
+                    <div class="profile-invalidated-tasks-list">
+                        <table ng-table="profileCtrl.invalidatedTasksAsValidatorTableSettings" class="table">
+                            <tr ng-repeat="invalidatedTask in $data">
+                                <td title="'Project' | translate" sortable="'projectId'">
+                                    <a ng-href="/project/{{ invalidatedTask.projectId }}">
+                                        {{ invalidatedTask.projectName }}
+                                    </a>
+                                </td>
+                                <td title="'Task' | translate">
+                                  <a ng-href="/project/{{ invalidatedTask.projectId }}?task={{ invalidatedTask.taskId }}&history={{ invalidatedTask.historyId }}">
+                                        {{ 'Task' | translate }} {{ invalidatedTask.taskId }}
+                                    </a>
+                                </td>
+                                <td title="'State' | translate" filter="{closed: 'select'}"
+                                    filter-data="profileCtrl.validatorClosedFilterOptions">
+                                    {{ (invalidatedTask.closed ? 'Closed' : 'Open') | translate }}
+                                </td>
+                            </tr>
+                        </table>
                     </div>
                 </div>
             </div>

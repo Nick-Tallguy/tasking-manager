@@ -5,6 +5,7 @@ from server.models.dtos.project_dto import DraftProjectDTO, ProjectDTO
 from server.services.project_admin_service import ProjectAdminService, InvalidGeoJson, InvalidData, \
     ProjectAdminServiceError, NotFound
 from server.services.users.authentication_service import token_auth, tm
+from server.services.mapping_service import MappingService
 from server.services.validator_service import ValidatorService
 
 
@@ -182,6 +183,9 @@ class ProjectAdminAPI(Resource):
                       enforceValidatorRole:
                           type: boolean
                           default: false
+                      allowNonBeginners:
+                          type: boolean
+                          default: false
                       private:
                           type: boolean
                           default: false
@@ -205,6 +209,16 @@ class ProjectAdminAPI(Resource):
                           items:
                               type: string
                           default: [BUILDINGS, ROADS]
+                      mappingEditors:
+                          type: array
+                          items:
+                              type: string
+                          default: [ID, JOSM, POTLATCH_2, FIELD_PAPERS]
+                      validationEditors:
+                          type: array
+                          items:
+                              type: string
+                          default: [ID, JOSM, POTLATCH_2, FIELD_PAPERS]
                       campaignTag:
                           type: string
                           default: malaria
@@ -230,6 +244,9 @@ class ProjectAdminAPI(Resource):
                           items:
                               schema:
                                   $ref: "#/definitions/ProjectInfo"
+                      taskCreationMode:
+                          type: integer
+                          default: GRID
         responses:
             200:
                 description: Project updated
@@ -433,6 +450,131 @@ class ProjectValidateAll(Resource):
             current_app.logger.critical(error_msg)
             return {"error": error_msg}, 500
 
+class ProjectResetAll(Resource):
+
+    @tm.pm_only()
+    @token_auth.login_required
+    def post(self, project_id):
+        """
+        Reset all tasks on project back to ready, preserving history.
+        ---
+        tags:
+            - project-admin
+        produces:
+            - application/json
+        parameters:
+            - in: header
+              name: Authorization
+              description: Base64 encoded session token
+              required: true
+              type: string
+              default: Token sessionTokenHere==
+            - name: project_id
+              in: path
+              description: The unique project ID
+              required: true
+              type: integer
+              default: 1
+        responses:
+            200:
+                description: All tasks reset
+            401:
+                description: Unauthorized - Invalid credentials
+            500:
+                description: Internal Server Error
+        """
+        try:
+            ProjectAdminService.reset_all_tasks(project_id, tm.authenticated_user_id)
+            return {"Success": "All tasks reset"}, 200
+        except Exception as e:
+            error_msg = f'Project GET - unhandled error: {str(e)}'
+            current_app.logger.critical(error_msg)
+            return {"error": error_msg}, 500
+
+
+class ProjectMapAll(Resource):
+
+    @tm.pm_only()
+    @token_auth.login_required
+    def post(self, project_id):
+        """
+        Map all tasks on a project
+        ---
+        tags:
+            - project-admin
+        produces:
+            - application/json
+        parameters:
+            - in: header
+              name: Authorization
+              description: Base64 encoded session token
+              required: true
+              type: string
+              default: Token sessionTokenHere==
+            - name: project_id
+              in: path
+              description: The unique project ID
+              required: true
+              type: integer
+              default: 1
+        responses:
+            200:
+                description: All tasks mapped
+            401:
+                description: Unauthorized - Invalid credentials
+            500:
+                description: Internal Server Error
+        """
+        try:
+            MappingService.map_all_tasks(project_id, tm.authenticated_user_id)
+            return {"Success": "All tasks mapped"}, 200
+        except Exception as e:
+            error_msg = f'Project GET - unhandled error: {str(e)}'
+            current_app.logger.critical(error_msg)
+            return {"error": error_msg}, 500
+
+
+class ProjectResetBadImagery(Resource):
+
+    @tm.pm_only()
+    @token_auth.login_required
+    def post(self, project_id):
+        """
+        Mark all bad imagery tasks ready for mapping
+        ---
+        tags:
+            - project-admin
+        produces:
+            - application/json
+        parameters:
+            - in: header
+              name: Authorization
+              description: Base64 encoded session token
+              required: true
+              type: string
+              default: Token sessionTokenHere==
+            - name: project_id
+              in: path
+              description: The unique project ID
+              required: true
+              type: integer
+              default: 1
+        responses:
+            200:
+                description: All bad imagery tasks marked ready for mapping
+            401:
+                description: Unauthorized - Invalid credentials
+            500:
+                description: Internal Server Error
+        """
+        try:
+            MappingService.reset_all_badimagery(project_id, tm.authenticated_user_id)
+            return {"Success": "All bad imagery tasks marked ready for mapping"}, 200
+        except Exception as e:
+            error_msg = f'Project GET - unhandled error: {str(e)}'
+            current_app.logger.critical(error_msg)
+            return {"error": error_msg}, 500
+
 
 class ProjectsForAdminAPI(Resource):
 
@@ -479,3 +621,55 @@ class ProjectsForAdminAPI(Resource):
             error_msg = f'Project GET - unhandled error: {str(e)}'
             current_app.logger.critical(error_msg)
             return {"error": error_msg}, 500
+
+
+class ProjectTransfer(Resource):
+
+    @tm.pm_only()
+    @token_auth.login_required
+    def post(self, project_id):
+        """
+        Transfers a project to a new user.
+        ---
+        tags:
+            - project-admin
+        produces:
+            - application/json
+        parameters:
+            - in: header
+              name: Authorization
+              description: Base64 encoded session token
+              required: true
+              type: string
+              default: Token sessionTokenHere==
+            - name: project_id
+              in: path
+              description: The unique project ID
+              required: true
+              type: integer
+              default: 1
+            - in: body
+              name: body
+              required: true
+              description: the username of the new owner
+              schema:
+                  properties:
+                      username:
+                        type: string
+        responses:
+            200:
+                description: All tasks reset
+            401:
+                description: Unauthorized - Invalid credentials
+            500:
+                description: Internal Server Error
+        """
+        try:
+            username = request.get_json()['username']
+            ProjectAdminService.transfer_project_to(project_id, tm.authenticated_user_id, username)
+            return {"Success": "Project Transfered"}, 200
+        except Exception as e:
+            error_msg = f'Project GET - unhandled error: {str(e)}'
+            current_app.logger.critical(error_msg)
+            return {"error": error_msg}, 500
+

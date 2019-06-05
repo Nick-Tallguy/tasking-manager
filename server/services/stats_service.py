@@ -1,8 +1,22 @@
 from cachetools import TTLCache, cached
+from sqlalchemy import func
+from geoalchemy2.shape import to_shape
+from shapely.geometry import Polygon
+from shapely.ops import transform
+from functools import partial
+import pyproj
+import dateutil.parser
+import datetime
+import math
+from flask import current_app
 
 from server import db
-from server.models.dtos.stats_dto import ProjectContributionsDTO, UserContribution, Pagination, TaskHistoryDTO, \
-    ProjectActivityDTO, HomePageStatsDTO
+from server.models.dtos.stats_dto import (
+    ProjectContributionsDTO, UserContribution, Pagination, TaskHistoryDTO,
+    ProjectActivityDTO, HomePageStatsDTO, OrganizationStatsDTO,
+    CampaignStatsDTO
+    )
+
 from server.models.postgis.project import Project
 from server.models.postgis.statuses import TaskStatus
 from server.models.postgis.task import TaskHistory, User, Task
@@ -111,10 +125,15 @@ class StatsService:
     def get_latest_activity(project_id: int, page: int) -> ProjectActivityDTO:
         """ Gets all the activity on a project """
 
-        results = db.session.query(TaskHistory.action, TaskHistory.action_date, TaskHistory.action_text, User.username) \
-            .join(User).filter(TaskHistory.project_id == project_id, TaskHistory.action != 'COMMENT')\
-            .order_by(TaskHistory.action_date.desc())\
-            .paginate(page, 10, True)
+        results = db.session.query(
+                TaskHistory.id, TaskHistory.task_id, TaskHistory.action, TaskHistory.action_date,
+                TaskHistory.action_text, User.username
+            ).join(User).filter(
+                TaskHistory.project_id == project_id,
+                TaskHistory.action != 'COMMENT'
+            ).order_by(
+                TaskHistory.action_date.desc()
+            ).paginate(page, 10, True)
 
         if results.total == 0:
             raise NotFound()
@@ -122,11 +141,12 @@ class StatsService:
         activity_dto = ProjectActivityDTO()
         for item in results.items:
             history = TaskHistoryDTO()
+            history.history_id = item.id
+            history.task_id = item.task_id
             history.action = item.action
             history.action_text = item.action_text
             history.action_date = item.action_date
             history.action_by = item.username
-
             activity_dto.activity.append(history)
 
         activity_dto.pagination = Pagination(results)
@@ -159,12 +179,36 @@ class StatsService:
 
         contrib_dto = ProjectContributionsDTO()
         for row in results:
-            user_contrib = UserContribution()
-            user_contrib.username = row[1] if row[1] else row[4]
-            user_contrib.mapped = row[2] if row[2] else 0
-            user_contrib.validated = row[5] if row[5] else 0
+            if row[0]:
+                user_contrib = UserContribution()
+                user_contrib.username = row[1] if row[1] else row[4]
+                user_contrib.mapped = row[2] if row[2] else 0
+                user_contrib.validated = row[5] if row[5] else 0
+                user_contrib.total_time_spent = 0
+                user_contrib.time_spent_mapping = 0
+                user_contrib.time_spent_validating = 0
 
-            contrib_dto.user_contributions.append(user_contrib)
+                sql = """SELECT SUM(TO_TIMESTAMP(action_text, 'HH24:MI:SS')::TIME) FROM task_history
+                        WHERE action='LOCKED_FOR_MAPPING'
+                        and user_id = {0} and project_id = {1};""".format(row[0], project_id)
+                total_mapping_time = db.engine.execute(sql)
+                for time in total_mapping_time:
+                    total_mapping_time = time[0]
+                    if total_mapping_time:
+                        user_contrib.time_spent_mapping = total_mapping_time.total_seconds()
+                        user_contrib.total_time_spent += user_contrib.time_spent_mapping
+
+                sql = """SELECT SUM(TO_TIMESTAMP(action_text, 'HH24:MI:SS')::TIME) FROM task_history
+                        WHERE action='LOCKED_FOR_VALIDATION'
+                        and user_id = {0} and project_id = {1};""".format(row[0], project_id)
+                total_validation_time = db.engine.execute(sql)
+                for time in total_validation_time:
+                    total_validation_time = time[0]
+                    if total_validation_time:
+                        user_contrib.time_spent_validating = total_validation_time.total_seconds()
+                        user_contrib.total_time_spent += user_contrib.time_spent_validating
+
+                contrib_dto.user_contributions.append(user_contrib)
 
         return contrib_dto
 
@@ -174,9 +218,98 @@ class StatsService:
         """ Get overall TM stats to give community a feel for progress that's being made """
         dto = HomePageStatsDTO()
 
-        dto.mappers_online = Task.query.filter(Task.locked_by != None).distinct(Task.locked_by).count()
+        dto.total_projects = Project.query.count()
+        dto.mappers_online = Task.query.filter(
+            Task.locked_by is not None
+            ).distinct(Task.locked_by).count()
         dto.total_mappers = User.query.count()
-        dto.tasks_mapped = Task.query.\
-            filter(Task.task_status.in_((TaskStatus.MAPPED.value, TaskStatus.VALIDATED.value))).count()
+        dto.total_validators = Task.query.filter(
+            Task.task_status == TaskStatus.VALIDATED.value
+            ).distinct(Task.validated_by).count()
+        dto.tasks_mapped = Task.query.filter(
+            Task.task_status.in_(
+                (TaskStatus.MAPPED.value, TaskStatus.VALIDATED.value)
+                )
+            ).count()
+        dto.tasks_validated = Task.query.filter(
+            Task.task_status == TaskStatus.VALIDATED.value
+            ).count()
+
+        org_proj_count = db.session.query(
+            Project.organisation_tag,
+            func.count(Project.organisation_tag)
+        ).group_by(Project.organisation_tag).all()
+
+        untagged_count = 0
+
+        # total_area = 0
+
+
+
+       # dto.total_area = 0
+
+        # total_area_sql = """select sum(ST_Area(geometry)) from public.projects as area"""
+
+        # total_area_result = db.engine.execute(total_area_sql)
+        # current_app.logger.debug(total_area_result)
+        # for rowproxy in total_area_result:
+            # rowproxy.items() returns an array like [(key0, value0), (key1, value1)]
+            # for tup in rowproxy.items():
+                # total_area += tup[1]
+                # current_app.logger.debug(total_area)
+        # dto.total_area = total_area
+
+        tasks_mapped_area = 0
+        tasks_mapped_sql = """select sum(ST_Area(geometry)) from public.tasks where task_status = 2"""
+        tasks_mapped_result = db.engine.execute(tasks_mapped_sql)
+        for rowproxy in tasks_mapped_result:
+            for tup in rowproxy:
+                tasks_mapped_area += tup
+        dto.total_mapped_area = tasks_mapped_area
+
+        tasks_validated_area = 0
+        tasks_validated_sql = """select sum(ST_Area(geometry)) from public.tasks where task_status = 4"""
+        tasks_validated_result = db.engine.execute(tasks_validated_sql)
+        for rowproxy in tasks_validated_result:
+            sum_proxy = [tup for tup in rowproxy if tup is not None]
+            tasks_validated_area += sum(sum_proxy)
+        dto.total_validated_area = tasks_validated_area
+
+        campaign_count = db.session.query(Project.campaign_tag, func.count(Project.campaign_tag))\
+            .group_by(Project.campaign_tag).all()
+        no_campaign_count = 0
+        unique_campaigns = 0
+
+        for tup in campaign_count:
+            campaign_stats = CampaignStatsDTO(tup)
+            if campaign_stats.tag:
+                dto.campaigns.append(campaign_stats)
+                unique_campaigns += 1
+            else:
+                no_campaign_count += campaign_stats.projects_created
+
+        if no_campaign_count:
+            no_campaign_proj = CampaignStatsDTO(('Untagged', no_campaign_count))
+            dto.campaigns.append(no_campaign_proj)
+        dto.total_campaigns = unique_campaigns
+
+
+        org_proj_count = db.session.query(Project.organisation_tag, func.count(Project.organisation_tag))\
+            .group_by(Project.organisation_tag).all()
+        no_org_count = 0
+        unique_orgs = 0
+
+        for tup in org_proj_count:
+            org_stats = OrganizationStatsDTO(tup)
+            if org_stats.tag:
+                dto.organizations.append(org_stats)
+                unique_orgs += 1
+            else:
+                no_org_count += org_stats.projects_created
+
+        if no_org_count:
+            no_org_proj = OrganizationStatsDTO(('Untagged', no_org_count))
+            dto.organizations.append(no_org_proj)
+        dto.total_organizations = unique_orgs
 
         return dto

@@ -7,22 +7,25 @@
      */
     angular
         .module('taskingManager')
-        .controller('profileController', ['$routeParams', '$location', '$window', 'accountService','mapService','projectMapService','userService', 'geospatialService', 'messageService','settingsService', profileController]);
+        .controller('profileController', ['$routeParams', '$location', '$window', 'NgTableParams', 'accountService','authService','mapService', 'projectService', 'projectMapService','userService', 'taskService', 'geospatialService', 'messageService','settingsService', profileController]);
 
-    function profileController($routeParams, $location, $window, accountService, mapService, projectMapService, userService, geospatialService, messageService, settingsService) {
+    function profileController($routeParams, $location, $window,  NgTableParams, accountService, authService, mapService, projectService, projectMapService, userService, taskService, geospatialService, messageService, settingsService) {
 
         var vm = this;
         vm.username = '';
         vm.currentlyLoggedInUser = null;
         vm.userDetails = null;
+        vm.userStats = null;
         vm.osmUserDetails = null;
         vm.projects = [];
         vm.map = null;
         vm.highlightSource = null;
+        vm.savingExpertMode = false;
 
         // Errors - for displaying messages when API calls were not successful
         vm.errorSetRole = false;
         vm.errorSetLevel = false;
+        vm.errorSetExpertMode = false;
         vm.errorSetContactDetails = false;
         vm.errorVerificationEmailSent = false;
 
@@ -39,6 +42,16 @@
         vm.mapperLevelIntermediate = 0;
         vm.mapperLevelAdvanced = 0;
 
+        // Invalidated tasks tables
+        vm.mapperClosedFilterOptions = [
+          {title: 'All', id: ''},
+          {title: 'Open', id: false},
+          {title: 'Closed', id: true},
+        ];
+        vm.validatorClosedFilterOptions = vm.mapperClosedFilterOptions.slice(0); // clone
+        vm.invalidatedTasksAsMapperTableSettings = invalidatedTaskTableSettings(false);
+        vm.invalidatedTasksAsValidatorTableSettings = invalidatedTaskTableSettings(true);
+
         activate();
 
         function activate() {
@@ -50,9 +63,39 @@
             var hoverIdentify = true;
             var clickIdentify = true;
             projectMapService.addPopupOverlay(hoverIdentify, clickIdentify);
-            getUserProjects();
             getLevelSettings();
+            getUserStats();
+            getUserProjects();
         }
+
+        function invalidatedTaskTableSettings(asValidator) {
+            return new NgTableParams({
+                sorting: {updatedDate: "desc"},
+                filter: {closed: false},
+                count: 10,
+            }, {
+                counts: [10, 25, 50, 100],
+                getData: function(params) {
+                    var sortBy = Object.keys(params.sorting())[0]
+                    return taskService.getUserInvalidatedTasks(
+                        asValidator,
+                        vm.username,
+                        params.page(),
+                        params.count(),
+                        sortBy,
+                        sortBy ? params.sorting()[sortBy] : undefined,
+                        params.filter().closed,
+                        params.filter().project
+                    ).then(function (data) {
+                        params.total(data.pagination.total);
+                        return data.invalidatedTasks;
+                    }, function(e) {
+                        // an error occurred
+                        return [];
+                    });
+                }
+            });
+        };
 
         /**
          * Set user details by calling the APIs
@@ -67,6 +110,16 @@
                 // On success, set the OSM account details for this user
                 vm.osmUserDetails = data;
             })
+        }
+
+        /**
+         * Returns true if the user is logged in and viewing their own profile,
+         * false if not
+         */
+        vm.isOwnProfile = function() {
+          return authService.getSession() ?
+                 vm.username === authService.getSession().username :
+                 false;
         }
 
         /**
@@ -110,6 +163,22 @@
                getUser();
             }, function(){
                 vm.errorSetLevel = true;
+            });
+        };
+
+        /**
+         * Set the user's expert mode
+         * @param isExpert
+         */
+        vm.setExpertMode = function(isExpert){
+            vm.errorSetExpertMode = false;
+            vm.savingExpertMode = true;
+            userService.setExpertMode(isExpert).then(function(data) {
+                getUser();
+                vm.savingExpertMode = false;
+            }, function(){
+                vm.errorSetExpertMode = true;
+                vm.savingExpertMode = false;
             });
         };
 
@@ -180,20 +249,71 @@
          * View project for user and bounding box in Overpass Turbo
          * @param aoi
          */
-        vm.viewOverpassTurbo = function (aoi) {
-            var feature = geospatialService.getFeatureFromGeoJSON(aoi);
-            var olExtent = feature.getGeometry().getExtent();
-            var bboxArray = geospatialService.transformExtentToLatLonArray(olExtent);
-            var bbox = 'w="' + bboxArray[0] + '" s="' + bboxArray[1] + '" e="' + bboxArray[2] + '" n="' + bboxArray[3] + '"';
-            var queryPrefix = '<osm-script output="json" timeout="25"><union>';
-            var querySuffix = '</union><print mode="body"/><recurse type="down"/><print mode="skeleton" order="quadtile"/></osm-script>';
-            var queryMiddle = '<query type="node"><user name="' + vm.username + '"/><bbox-query ' + bbox + '/></query>' +
-                '<query type="way"><user name="' + vm.username + '"/><bbox-query ' + bbox + '/></query>' +
-                '<query type="relation"><user name="' + vm.username + '"/><bbox-query ' + bbox + '/></query>';
-            var query = queryPrefix + queryMiddle + querySuffix;
-            $window.open('http://overpass-turbo.eu/map.html?Q=' + encodeURIComponent(query));
+        vm.viewOverpassTurbo = function (project_id) {
+            var promise = projectService.getAOIServer(project_id);
+            var tabWindow = $window.open('', '_blank');
+            promise.then(function(aoi) {
+
+                var feature = geospatialService.getFeatureFromGeoJSON(aoi);
+                var olExtent = feature.getGeometry().getExtent();
+                var bboxArray = geospatialService.transformExtentToLatLonArray(olExtent);
+                var bbox = 'w="' + bboxArray[0] + '" s="' + bboxArray[1] + '" e="' + bboxArray[2] + '" n="' + bboxArray[3] + '"';
+                var queryPrefix = '<osm-script output="json" timeout="25"><union>';
+                var querySuffix = '</union><print mode="body"/><recurse type="down"/><print mode="skeleton" order="quadtile"/></osm-script>';
+                var queryMiddle = '<query type="node"><user name="' + vm.username + '"/><bbox-query ' + bbox + '/></query>' +
+                    '<query type="way"><user name="' + vm.username + '"/><bbox-query ' + bbox + '/></query>' +
+                    '<query type="relation"><user name="' + vm.username + '"/><bbox-query ' + bbox + '/></query>';
+
+                var query = queryPrefix + queryMiddle + querySuffix;
+                tabWindow.location.href = 'http://overpass-turbo.eu/map.html?Q=' + encodeURIComponent(query);
+            });
         };
 
+        /**
+         * Calculate duration for user profile
+         */
+        function humanizeDuration(eventDuration) {
+          var eventDurationString = ''
+          var eventMDuration = moment.duration(eventDuration, 'seconds');
+          var years = eventMDuration.years();
+          var days = eventMDuration.days();
+          var hours = eventMDuration.hours();
+          var minutes = eventMDuration.minutes();
+          eventDurationString = "";
+          if (years > 0)
+          {
+              if (years === 1){
+                  eventDurationString += " " + years + ' year'
+              } else {
+                  eventDurationString += " " + years + ' years'
+              }
+          }
+          if (days > 0)
+          {
+              if (days === 1){
+                  eventDurationString += " " + days + ' day'
+              } else {
+                  eventDurationString += " " + days + ' days'
+              }
+          }
+          if (hours > 0)
+          {
+              if (hours === 1){
+                  eventDurationString += " " + hours + ' hour'
+              } else {
+                  eventDurationString += " " + hours + ' hours'
+              }
+          }
+          if (minutes > 0)
+          {
+              if (minutes === 1){
+                  eventDurationString += " " + minutes + ' minute'
+              } else {
+                  eventDurationString += " " + minutes + ' minutes'
+              }
+          }
+          return eventDurationString
+        }
 
         /**
          * Get the settings for the levels
@@ -205,5 +325,18 @@
                 vm.mapperLevelAdvanced = data.mapperLevelAdvanced;
             });
         }
+
+        /**
+         * Get stats about the user
+         */
+        function getUserStats() {
+            var resultsPromise = userService.getUserStats(vm.username);
+            resultsPromise.then(function (data) {
+                // On success, set the detailed stats for this user
+                vm.userStats = data;
+                vm.userStats.timeSpentMapping = humanizeDuration(vm.userStats.timeSpentMapping)
+            });
+        }
+
     }
 })();

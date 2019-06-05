@@ -15,7 +15,7 @@ import math
 
 search_cache = TTLCache(maxsize=128, ttl=300)
 
-# max area allowed for passed in bbox, calculation shown to help future maintenace
+# max area allowed for passed in bbox, calculation shown to help future maintenance
 # client resolution (mpp)* arbitrary large map size on a large screen in pixels * 50% buffer, all squared
 MAX_AREA = math.pow(1250*4275*1.5,2)
 
@@ -107,15 +107,17 @@ class ProjectSearchService:
             .filter(ProjectInfo.locale.in_([search_dto.preferred_locale, 'en'])) \
             .filter(Project.private != True)
 
-        if not search_dto.is_project_manager:
-            query = query.filter(Project.status == ProjectStatus.PUBLISHED.value)
-        else:
-            project_status_array = [ProjectStatus.PUBLISHED.value]
-            if search_dto.project_statuses:
-                for project_status in search_dto.project_statuses:
-                    project_status_array.append(ProjectStatus[project_status].value)
+        project_status_array = [ProjectStatus.PUBLISHED.value]
 
-            query = query.filter(Project.status.in_(project_status_array))
+        if search_dto.project_statuses:
+            for project_status in search_dto.project_statuses:
+                project_status_array.append(ProjectStatus[project_status].value)
+
+        if not search_dto.is_project_manager:
+            project_status_array = list(filter(lambda x: x != ProjectStatus.DRAFT.value,
+                                               project_status_array))
+
+        query = query.filter(Project.status.in_(project_status_array))
 
         if search_dto.mapper_level and search_dto.mapper_level.upper() != 'ALL':
             query = query.filter(Project.mapper_level == MappingLevel[search_dto.mapper_level].value)
@@ -139,8 +141,10 @@ class ProjectSearchService:
             or_search = search_dto.text_search.replace(' ', ' | ')
             query = query.filter(ProjectInfo.text_searchable.match(or_search, postgresql_regconfig='english'))
 
-        all_results = query.order_by(Project.priority, Project.id.desc()).all()
-        paginated_results = query.order_by(Project.priority, Project.id.desc()).paginate(search_dto.page, 14, True)
+        all_results = query.order_by(Project.priority, Project.id.desc()) \
+            .distinct(Project.priority, Project.id).all()
+        paginated_results = query.order_by(Project.priority, Project.id.desc()) \
+            .distinct(Project.priority, Project.id).paginate(search_dto.page, 14, True)
 
         return all_results, paginated_results
 

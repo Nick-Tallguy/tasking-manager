@@ -8,19 +8,20 @@
      */
     angular
         .module('taskingManager')
-        .controller('projectController', ['$timeout', '$interval', '$scope', '$location', '$routeParams', '$window', 'configService', 'mapService', 'projectService', 'styleService', 'taskService', 'geospatialService', 'editorService', 'authService', 'accountService', 'userService', 'licenseService', 'messageService', 'drawService', 'languageService', 'userPreferencesService', projectController]);
+        .controller('projectController', ['$timeout', '$interval', '$scope', '$location', '$routeParams', '$window', '$q', 'moment', 'configService', 'mapService', 'projectService', 'styleService', 'taskService', 'mappingIssueService', 'geospatialService', 'editorService', 'authService', 'accountService', 'userService', 'licenseService', 'messageService', 'drawService', 'languageService', 'userPreferencesService', 'osmchaService', projectController]);
 
-    function projectController($timeout, $interval, $scope, $location, $routeParams, $window, configService, mapService, projectService, styleService, taskService, geospatialService, editorService, authService, accountService, userService, licenseService, messageService, drawService, languageService, userPreferencesService) {
-
+    function projectController($timeout, $interval, $scope, $location, $routeParams, $window, $q, moment, configService, mapService, projectService, styleService, taskService, mappingIssueService, geospatialService, editorService, authService, accountService, userService, licenseService, messageService, drawService, languageService, userPreferencesService, osmchaService) {
         var vm = this;
         vm.id = 0;
+        vm.selectedIssueCategory = null;
+        vm.loaded = false;
         vm.projectData = null;
         vm.taskVectorLayer = null;
         vm.highlightVectorLayer = null;
         vm.lockedByCurrentUserVectorLayer = null;
         vm.map = null;
         vm.user = null;
-        vm.maxlengthComment = 500;
+        vm.maxlengthComment = configService.maxCommentLength;
         vm.taskUrl = '';
 
         // tab and view control
@@ -29,6 +30,7 @@
         vm.validatingStep = '';
         vm.userCanMap = true;
         vm.userCanValidate = true;
+        vm.showOSMCha = false;
 
         //error control
         vm.taskErrorMapping = '';
@@ -39,6 +41,9 @@
         vm.taskUnLockErrorMessage = '';
         vm.taskSplitError = false;
         vm.taskSplitCode == null;
+        vm.taskCommentError = false;
+        vm.taskCommentErrorMessage = '';
+        vm.wasAutoUnlocked = false;
 
         //authorization
         vm.isAuthorized = false;
@@ -46,17 +51,23 @@
         //status flags
         vm.isSelectedMappable = false;
         vm.isSelectedValidatable = false;
-        vm.isSelectedSplittable = false;
 
         //task data
         vm.selectedTaskData = null;
         vm.lockedTaskData = null;
+        vm.lockTime = {};
         vm.multiSelectedTasksData = [];
         vm.multiLockedTasks = [];
+        vm.mappingIssueCategories = [];
+        vm.availableMappingIssueCategories = [];
+        vm.mappingIssues = [];
 
         //editor
         vm.editorStartError = '';
-        vm.selectedEditor = 'ideditor';
+        vm.selectedMappingEditor = 'ideditor';
+        vm.selectedValidationEditor = 'josm';
+        vm.mappingEditors = [];
+        vm.validationEditors = [];
 
         //interaction
         vm.selectInteraction = null;
@@ -66,7 +77,7 @@
 
         //bound from the html
         vm.comment = '';
-        vm.usernames = [];
+        vm.suggestedUsers = [];
 
         //table sorting control
         vm.propertyName = 'username';
@@ -75,6 +86,9 @@
         // License
         vm.showLicenseModal = false;
         vm.lockingReason = '';
+
+        // Augmented diff or attic query selection
+        vm.selectedItem = null;
 
         //interval timer promise for autorefresh
         var autoRefresh = undefined;
@@ -93,12 +107,20 @@
             vm.currentTab = 'instructions';
             vm.mappingStep = 'selecting';
             vm.validatingStep = 'selecting';
-            vm.selectedEditor = 'ideditor'; // default to iD editor
+            vm.selectedMappingEditor = 'ideditor'; // default to iD editor
+            vm.selectedValidationEditor = 'josm';
             mapService.createOSMMap('map');
             mapService.addOverviewMap();
             vm.map = mapService.getOSMMap();
+            vm.loaded = false;
+
+            mappingIssueService.getMappingIssueCategories().then(function(data) {
+              vm.mappingIssueCategories = data.categories;
+              vm.availableMappingIssueCategories = vm.remainingMappingIssueCategories();
+            });
 
             vm.id = $routeParams.id;
+            vm.highlightHistory = $routeParams.history ? parseInt($routeParams.history, 10) : null;
 
             updateMappedTaskPerUser(vm.id);
 
@@ -124,13 +146,15 @@
 
             //start up a timer for autorefreshing the project.
             autoRefresh = $interval(function () {
-                refreshProject(vm.id);
+                refreshAbbreviatedProject(vm.id);
                 updateMappedTaskPerUser(vm.id);
-                //TODO do a selected task refesh too
+                //TODO do a selected task refresh too
             }, 10000);
 
             // set up the preferred editor from user preferences
-            vm.selectedEditor = userPreferencesService.getFavouriteEditor();
+            
+            vm.selectedMappingEditor = userPreferencesService.getFavouriteEditor();
+            vm.selectedValidationEditor = userPreferencesService.getFavouriteEditor();
         }
 
         // listen for navigation away from the page event and stop the autrefresh timer
@@ -139,7 +163,7 @@
                 $interval.cancel(autoRefresh);
                 autoRefresh = undefined;
             }
-        })
+        });
 
 
         /**
@@ -154,6 +178,76 @@
         }
 
         /**
+         * Returns array of mapping issue categories for which no issues have
+         * been noted as of yet
+         */
+        vm.remainingMappingIssueCategories = function() {
+            return vm.mappingIssueCategories.filter(function(category) {
+                return !vm.isMappingIssueCategoryInUse(category);
+            });
+        };
+
+        /**
+         * Returns true if mapping issues have already been noted in the given
+         * issue category
+         */
+        vm.isMappingIssueCategoryInUse = function(category) {
+            return !!vm.mappingIssues.find(function(issue) {
+                return issue.mappingIssueCategoryId === category.categoryId;
+            });
+        };
+
+        /**
+         * Add the currently selected mapping issue to the list of noted issues
+         * with an initial count of 1 issue
+         */
+        vm.addMappingIssue = function() {
+            if (!vm.selectedIssueCategory) {
+                return;
+            }
+
+            vm.mappingIssues.push({
+                mappingIssueCategoryId: vm.selectedIssueCategory.categoryId,
+                issue: vm.selectedIssueCategory.name,
+                count: 1,
+            });
+
+            vm.availableMappingIssueCategories = vm.remainingMappingIssueCategories();
+            vm.selectedIssueCategory = null;
+        };
+
+        /**
+         * Removes the given issue from the array of current mapping issues
+         */
+        vm.removeMappingIssue = function(issueToRemove) {
+            vm.mappingIssues = vm.mappingIssues.filter(function(issue) {
+                return issue.mappingIssueCategoryId !== issueToRemove.mappingIssueCategoryId;
+            });
+
+            // Now that we've freed up an additional issue category, update the
+            // available categories
+            vm.availableMappingIssueCategories = vm.remainingMappingIssueCategories();
+        };
+
+        /**
+         * Determines if any mapping issues are currently set
+         */
+        vm.hasMappingIssues = function () {
+            return !!vm.mappingIssues.find(function(issue) {
+                return issue.count > 0;
+            });
+        };
+
+        /**
+         * Reset mapping issue properties
+         */
+        vm.resetMappingIssues = function() {
+            vm.mappingIssues = [];
+            vm.selectedIssueCategory = null;
+            vm.availableMappingIssueCategories = vm.remainingMappingIssueCategories();
+        };
+
+        /**
          * convenience method to reset task data controller properties
          */
         vm.resetTaskData = function () {
@@ -162,11 +256,21 @@
             vm.multiSelectedTasksData = [];
             vm.multiLockedTasks = [];
             vm.lockedTasksForCurrentUser = [];
-        }
+            vm.resetMappingIssues();
+        };
 
         vm.updatePreferedEditor = function () {
-            userPreferencesService.setFavouriteEditor(vm.selectedEditor);
-        }
+            userPreferencesService.setFavouriteEditor(vm.selectedMappingEditor);
+        };
+
+        /**
+         * Reset the user's selected editor back to the default
+         */
+        vm.resetSelectedEditor = function() {
+          vm.selectedMappingEditor = vm.mappingEditors[0].value;
+          vm.selectedValidationEditor = vm.validationEditors[0].value;
+          vm.editorStartError = '';
+        };
 
         /**
          * convenience method to reset task status controller properties
@@ -174,8 +278,7 @@
         vm.resetStatusFlags = function () {
             vm.isSelectedMappable = false;
             vm.isSelectedValidatable = false;
-            vm.isSelectedSplittable = false;
-        }
+        };
 
         /**
          * convenience method to reset error controller properties
@@ -190,7 +293,10 @@
             vm.taskSplitError = false;
             vm.taskSplitCode == null;
             vm.taskUndoError = false;
-        }
+            vm.taskCommentError = false;
+            vm.taskCommentErrorMessage = '';
+            vm.wasAutoUnlocked = false;
+        };
 
         /**
          * Make the passed in feature the selected feature and ensure view and map updates for selected feature
@@ -264,6 +370,23 @@
                 vm.selectInteraction.setActive(false);
                 vm.drawPolygonInteraction.setActive(true);
             }
+        };
+
+        /**
+         * Add stand-alone comment, adding it to task history.
+         */
+        vm.addStandaloneComment = function() {
+            var projectId = vm.projectData.projectId;
+            var taskId = vm.selectedTaskData.taskId;
+            var commentPromise = taskService.addTaskComment(projectId, taskId, vm.comment);
+            commentPromise.then(function (data) {
+                vm.comment = '';
+                vm.resetErrors();
+                setUpSelectedTask(data);
+            }, function (error) {
+                vm.taskCommentError = true;
+                vm.taskCommentErrorMessage = error.data.Error;
+            });
         };
 
         /**
@@ -348,23 +471,96 @@
             });
         };
 
+        vm.getLockTime = function() {
+            var task = null;
+            if (vm.selectedTaskData) {
+                task = vm.selectedTaskData;
+            }
+            else if (vm.multiSelectedTasksData) {
+                task = vm.multiSelectedTasksData[0];
+            }
+            if (task != null && task.taskId in vm.lockTime) {
+                var lockTime = moment.utc(vm.lockTime[task.taskId]);
+                var diffTime = lockTime.add(task.autoUnlockSeconds, 'seconds').diff(moment.utc(), 'minutes');
+                var eventDuration = diffTime
+                var eventDurationString = ''
+                var eventMDuration = moment.duration(eventDuration, 'minutes');
+                var days = eventMDuration.days()
+                var hours = eventMDuration.hours()
+                var minutes = eventMDuration.minutes()
+                eventDurationString = ""
+                if (days > 0)
+                {
+                    if (days === 1){
+                        eventDurationString += " " + days + ' day'
+                    } else {
+                        eventDurationString += " " + days + ' days'
+                    }
+                }
+                if (hours > 0)
+                {
+                    if (hours === 1){
+                        eventDurationString += " " + hours + ' hour'
+                    } else {
+                        eventDurationString += " " + hours + ' hours'
+                    }
+                }
+                if (minutes > 0)
+                {
+                    if (minutes === 1){
+                        eventDurationString += " " + minutes + ' minute'
+                    } else {
+                        eventDurationString += " " + minutes + ' minutes'
+                    }
+                }
+                return eventDurationString
+            }
+            else {
+                return null;
+            }
+        };
+
         /**
          * Initilaise a project using it's id
          * @param id - id of the project to initialise
          */
         function initialiseProject(id) {
             vm.errorGetProject = false;
-            var resultsPromise = projectService.getProject(id);
+            var resultsPromise = projectService.getProject(id, false);
             resultsPromise.then(function (data) {
                 //project returned successfully
+                vm.loaded = true;
                 vm.projectData = data;
+                vm.mappingEditors = createEditorList(vm.projectData.mappingEditors);
+                vm.selectedMappingEditor = vm.mappingEditors[0].value;
+                vm.validationEditors = createEditorList(vm.projectData.validationEditors);
+                vm.selectedValidationEditor = vm.validationEditors[0].value;
                 vm.userCanMap = vm.user && projectService.userCanMapProject(vm.user.mappingLevel, vm.projectData.mapperLevel, vm.projectData.enforceMapperLevel);
-                vm.userCanValidate = vm.user && projectService.userCanValidateProject(vm.user.role, vm.projectData.enforceValidatorRole);
+                vm.userCanValidate = vm.user && projectService.userCanValidateProject(vm.user.role, vm.user.mappingLevel, vm.projectData.enforceValidatorRole, vm.projectData.allowNonBeginners);
+                // If validator role enforced, show validator+ OSMCha buttons; otherwise show experts too
+                vm.showOSMCha = vm.projectData.enforceValidatorRole ? vm.userCanValidate :
+                                (projectService.userCanValidateProject(vm.user.role, true) || vm.user.isExpert);
                 addAoiToMap(vm.projectData.areaOfInterest);
                 addPriorityAreasToMap(vm.projectData.priorityAreas);
                 addProjectTasksToMap(vm.projectData.tasks, true);
                 // Add OpenLayers interactions
                 addInteractions();
+
+
+                // set up the preferred editor from user preferences
+                // check if their preferred editor is in the allowed editors otherwise, pick first of allowed editors
+                if (vm.mappingEditors.filter(function(e) { return e.value === userPreferencesService.getFavouriteEditor() }).length > 0) {
+                    vm.selectedMappingEditor = userPreferencesService.getFavouriteEditor();
+                }
+                else {
+                    vm.selectedMappingEditor = vm.mappingEditors[0].value;
+                }
+                if (vm.validationEditors.filter(function(e) { return e.value === userPreferencesService.getFavouriteEditor() }).length > 0) {
+                    vm.selectedValidationEditor = userPreferencesService.getFavouriteEditor();
+                }
+                else {
+                    vm.selectedValidationEditor = vm.validationEditors[0].value;
+                }
 
                 //add a layer for users locked tasks
                 if (!vm.lockedByCurrentUserVectorLayer) {
@@ -397,6 +593,7 @@
                 }
             }, function () {
                 // project not returned successfully
+                vm.loaded = true;
                 vm.errorGetProject = true;
             });
         }
@@ -407,7 +604,7 @@
          */
         function updateDescriptionAndInstructions(id) {
             vm.errorGetProject = false;
-            var resultsPromise = projectService.getProject(id);
+            var resultsPromise = projectService.getProject(id, false);
             resultsPromise.then(function (data) {
                 vm.projectData = data;
             }, function () {
@@ -422,9 +619,10 @@
          */
         function refreshProject(id) {
             vm.errorGetProject = false;
-            var resultsPromise = projectService.getProject(id);
+            var resultsPromise = projectService.getProject(id, false);
             resultsPromise.then(function (data) {
                 //project returned successfully
+                vm.errorGetProject = false;
                 vm.projectData = data;
                 addProjectTasksToMap(vm.projectData.tasks, false);
                 //TODO: move the selected task refresh to a separate function so it can be called separately
@@ -443,12 +641,38 @@
                     selectedFeatures.forEach(function (feature) {
                             vm.selectInteraction.getFeatures().push(feature);
                         }
-                    )
+                    );
                 }
 
             }, function () {
                 // project not returned successfully
                 vm.errorGetProject = true;
+            });
+        }
+
+        /**
+         * Gets abbreviated project data from server and updates the map
+         * @param id - id of project to be refreshed
+         */
+        function refreshAbbreviatedProject(id) {
+            vm.errorGetProject = false;
+            var resultsPromise = projectService.getProject(id, true);
+            resultsPromise.then(function (data) {
+                //project returned successfully
+                if (vm.projectData.tasks.features.length == data.tasks.features.length) {
+                    // length of tasks is the same; we can assume only states changed
+                    var source = vm.taskVectorLayer.getSource();
+                    var features = source.getFeatures();
+                    updateProjectTasksOnMap(features, data.tasks);
+                } else {
+                    // length of tasks has changed since last update; likely a split occurred.
+                    // fall back to full update
+                    refreshProject(id);
+                }
+
+            }, function () {
+               // project not returned successfully
+               vm.errorGetProject = true;
             });
         }
 
@@ -513,6 +737,21 @@
         }
 
         /**
+         * Updates the map task properties (colors, locked status)
+         * @param oldTasks
+         * @param newTasks
+         */
+        function updateProjectTasksOnMap(oldTasks, newTasks) {
+            var newFeatures = geospatialService.getFeaturesFromGeoJSON(newTasks);
+
+            for (var i=0; i < newFeatures.length; i++) {
+                var feature = taskService.getTaskFeatureById(oldTasks, newFeatures[i].getProperties()['taskId']);
+                feature.setProperties({"taskStatus": newFeatures[i].getProperties()['taskStatus']});
+            }
+            // for each task in features, update source
+        }
+
+        /**
          * Updates the data for mapped tasks by user
          * @param projectId
          */
@@ -526,7 +765,7 @@
         }
 
         /**
-         * Updates the map and contoller data for tasks locked by current user
+         * Updates the map and controller data for tasks locked by current user
          * @param projectId
          */
         function updateLockedTasksForCurrentUser(projectId) {
@@ -543,7 +782,22 @@
                     vm.lockedByCurrentUserVectorLayer.getSource().clear();
                 }
                 vm.lockedTasksForCurrentUser = [];
+                if (vm.mappingStep === 'locked' || vm.validatingStep === 'locked') {
+                    vm.mappingStep = 'viewing';
+                    vm.validatingStep = 'viewing';
+                    vm.wasAutoUnlocked = true;
+                }
             });
+        }
+
+        function getLastLockedAction(task) {
+            var mostRecentAction = task.taskHistory[0];
+            task.taskHistory.forEach(function(action) {
+                if (action.actionDate > mostRecentAction.actionDate) {
+                    mostRecentAction = action;
+                }
+            });
+            return mostRecentAction;
         }
 
         /**
@@ -659,7 +913,7 @@
             vm.map.addLayer(vector);
 
             // read tasks JSON into features
-            var aoiFeature = geospatialService.getFeatureFromGeoJSON(aoi)
+            var aoiFeature = geospatialService.getFeatureFromGeoJSON(aoi);
             source.addFeature(aoiFeature);
         }
 
@@ -711,6 +965,7 @@
                 vm.lockedTaskData = null;
                 vm.multiSelectedTasksData = [];
                 vm.multiLockedTasks = [];
+                vm.resetMappingIssues();
                 vm.resetErrors();
                 vm.resetStatusFlags();
                 vm.clearCurrentSelection();
@@ -740,6 +995,7 @@
                 vm.lockedTaskData = null;
                 vm.multiSelectedTasksData = [];
                 vm.multiLockedTasks = [];
+                vm.resetMappingIssues();
                 setUpSelectedTask(data);
                 // TODO: This is a bit icky.  Need to find something better.  Maybe when roles are in place.
                 // Need to make a decision on what tab to go to if user has clicked map but is not on mapping or validating
@@ -770,6 +1026,61 @@
             });
         }
 
+        vm.onShortCodeClick = function(event) {
+            // If the link contains one or more OSM entities or a viewport for
+            // the title, and the user has chosen JOSM as their editor, then try
+            // loading them in JOSM instead of following the link.
+            //
+            // Use of the title attribute is a hack, but the sanitizer allows it
+            // through and it's important these comments get properly sanitized.
+            if (event.target.tagName === 'A' && (vm.selectedMappingEditor === 'josm' || vm.selectedValidationEditor === 'josm')) {
+                var title = event.target.getAttribute("title");
+                var editorCommand = null;
+                var params = null;
+
+                if (/^((^|, )(way|node|relation) \d+)+$/.test(title)) {
+                    editorCommand = 'http://127.0.0.1:8111/load_object';
+                    params = vm.osmEntityJOSMParams(title);
+                }
+                else if (/^viewport \d+\/-?[.\d]+\/-?[.\d]+/.test(title)) {
+                    editorCommand = 'http://127.0.0.1:8111/zoom';
+                    params = vm.osmViewportJOSMParams(title);
+                }
+
+                if (editorCommand) {
+                    editorService.sendJOSMCmd(editorCommand, params).catch(function() {
+                        //warn that JSOM couldn't be contacted
+                        vm.editorStartError = 'josm-error';
+                    });
+
+                    event.preventDefault();
+                    return false;
+                }
+            }
+        };
+
+        vm.osmEntityJOSMParams = function(linkTitle) {
+            return {
+                objects: linkTitle.replace(/ /g, ''),
+                new_layer: 'true',
+                layer_name: linkTitle,
+            };
+        };
+
+        vm.osmViewportJOSMParams = function(linkTitle) {
+            // parse the zoom/lat/lon values that come after the space
+            var values = linkTitle.split(' ')[1].split('/');
+            var zoom = parseInt(values[0], 10);
+            var lat = parseFloat(values[1]);
+            var lon = parseFloat(values[2]);
+
+            var params = vm.josmBBoxFromViewport(zoom, lat, lon);
+            params.new_layer = 'true';
+            params.layer_name = linkTitle;
+
+            return params;
+        };
+
         /**
          * Sets up the view model for the task options and actions for passed in task data object.
          * @param data - task JSON data object
@@ -781,19 +1092,14 @@
             vm.isSelectedValidatable = (isLockedByMeValidation || data.taskStatus === 'MAPPED' || data.taskStatus === 'VALIDATED' || data.taskStatus === 'BADIMAGERY');
             vm.selectedTaskData = data;
 
-            // Format the comments by adding links to the usernames
-            var history = vm.selectedTaskData.taskHistory;
-            if (history) {
-                for (var i = 0; i < history.length; i++) {
-                    history[i].actionText = messageService.formatUserNamesToLink(history[i].actionText);
-                }
-            }
+            formatHistoryComments(vm.selectedTaskData.taskHistory);
 
             //jump to locked step if mappable and locked by me
             if (isLockedByMeMapping) {
                 vm.mappingStep = 'locked';
                 vm.lockedTaskData = data;
                 vm.currentTab = 'mapping';
+                vm.lockTime[vm.selectedTaskData.taskId] = getLastLockedAction(vm.lockedTaskData).actionDate;
             }
             else {
                 vm.mappingStep = 'viewing';
@@ -804,6 +1110,7 @@
                 vm.validatingStep = 'locked';
                 vm.lockedTaskData = data;
                 vm.currentTab = 'validation';
+                vm.lockTime[vm.selectedTaskData.taskId] = getLastLockedAction(vm.lockedTaskData).actionDate;
             }
             else {
                 vm.validatingStep = 'viewing';
@@ -811,6 +1118,24 @@
 
             //update browser address bar with task id search params
             $location.search('task', data.taskId);
+        }
+
+        /**
+         * Format a task comment by linking usernames and short codes
+         */
+        vm.formattedComment = function(commentText) {
+            return messageService.formatShortCodes(commentText);
+        };
+
+        /**
+         * Format all task history comments by linking usernames and short codes
+         */
+        function formatHistoryComments(taskHistory) {
+            if (taskHistory) {
+                for (var i = 0; i < taskHistory.length; i++) {
+                    taskHistory[i].actionText = vm.formattedComment(taskHistory[i].actionText);
+                }
+            }
         }
 
         /**
@@ -839,12 +1164,11 @@
                 //A fundamental refactor of this controller should be considered at some stage.
                 vm.resetErrors();
                 vm.resetStatusFlags();
-                vm.resetTaskData();
                 refreshProject(projectId);
                 updateMappedTaskPerUser(projectId);
-                vm.clearCurrentSelection();
                 vm.mappingStep = 'selecting';
                 vm.validatingStep = 'selecting';
+                setUpSelectedTask(data);
 
             }, function (error) {
                 onUnLockError(projectId, error);
@@ -891,7 +1215,8 @@
             var tasks = [{
                 comment: comment,
                 status: status,
-                taskId: taskId
+                taskId: taskId,
+                validationIssues: vm.mappingIssues,
             }];
             var unLockPromise = taskService.unLockTaskValidation(projectId, tasks);
             vm.comment = '';
@@ -906,9 +1231,10 @@
                 vm.resetTaskData();
                 refreshProject(projectId);
                 updateMappedTaskPerUser(projectId);
-                vm.clearCurrentSelection();
                 vm.mappingStep = 'selecting';
                 vm.validatingStep = 'selecting';
+                vm.selectedTaskData = data[0];
+                formatHistoryComments(vm.selectedTaskData.taskHistory);
             }, function (error) {
                 onUnLockError(projectId, error);
             });
@@ -1055,7 +1381,8 @@
                 vm.selectedTaskData = data;
                 vm.isSelectedMappable = true;
                 vm.lockedTaskData = data;
-                vm.isSelectedSplittable = isTaskSplittable(vm.taskVectorLayer.getSource().getFeatures(), data.taskId);
+                vm.lockTime[taskId] = getLastLockedAction(vm.lockedTaskData).actionDate;
+                formatHistoryComments(vm.selectedTaskData.taskHistory);
             }, function (error) {
                 onLockError(projectId, error);
             });
@@ -1093,7 +1420,7 @@
         };
 
         /**
-         * Call api to lock currently selected task for mapping.  Will update view and map after unlock.
+         * Call api to lock currently selected task for validation.  Will update view and map after unlock.
          */
         vm.lockSelectedTaskValidation = function () {
             vm.lockingReason = 'VALIDATION';
@@ -1120,31 +1447,75 @@
                 vm.selectedTaskData = tasks[0];
                 vm.isSelectedValidatable = true;
                 vm.lockedTaskData = tasks[0];
+                vm.lockTime[taskId] = getLastLockedAction(vm.lockedTaskData).actionDate;
+                formatHistoryComments(vm.selectedTaskData.taskHistory);
             }, function (error) {
                 onLockError(projectId, error);
             });
         };
 
-        /**
-         * Is the the task splittable
-         */
-        function isTaskSplittable(taskFeatures, taskId) {
-            var feature = taskService.getTaskFeatureById(taskFeatures, taskId);
-            var properties = feature.getProperties();
-            return feature.getProperties().taskSplittable;
+        vm.josmBBoxFromViewport = function(zoom, lat, lon) {
+          // We also need a window width and height to limit the size of the
+          // box. We use the current browser window dimensions as a proxy for
+          // the JOSM window.
+          var bbox = geoViewport.bounds([lon, lat], zoom, [$window.innerWidth, $window.innerHeight]);
 
+          // Convert WSEN bbox to JOSM params
+          return { left: bbox[0], right: bbox[2], top: bbox[3], bottom: bbox[1] };
+        };
+
+        /**
+         * Get a basic bounding box for the selected task
+         */
+        vm.taskBBox = function() {
+            var taskId = vm.selectedTaskData.taskId;
+            var features = vm.taskVectorLayer.getSource().getFeatures();
+            var selectedFeature = taskService.getTaskFeatureById(features, taskId);
+            return selectedFeature.getGeometry().getExtent();
+        }
+
+        /**
+         * Get the task bounding box, transforming the coordinates to WGS84.
+         */
+        vm.osmBBox = function() {
+            return geospatialService.transformExtentToLatLonString(vm.taskBBox());
         }
 
         /**
          * View OSM changesets by getting the bounding box, transforming the coordinates to WGS84 and passing it to OSM
          */
         vm.viewOSMChangesets = function () {
-            var taskId = vm.selectedTaskData.taskId;
-            var features = vm.taskVectorLayer.getSource().getFeatures();
-            var selectedFeature = taskService.getTaskFeatureById(features, taskId);
-            var bbox = selectedFeature.getGeometry().getExtent();
-            var bboxTransformed = geospatialService.transformExtentToLatLonString(bbox);
-            $window.open('http://www.openstreetmap.org/history?bbox=' + bboxTransformed);
+            $window.open('http://www.openstreetmap.org/history?bbox=' + vm.osmBBox());
+        };
+
+        /**
+         * View task-level changesets in OSMCha filtered by task bbox, start
+         * date of first edit, changeset comment, and participating usernames.
+         * We don't support a custom filter for tasks because we can't override
+         * the filter settings and provide a smaller bbox
+         */
+        vm.viewTaskOSMCha = function () {
+            osmchaService.viewOSMCha({
+                bbox: vm.osmBBox(),
+                usernames: vm.participantUsernames(),
+                startDate: vm.earliestHistoryActionDate(),
+                comment: vm.projectData.changesetComment,
+            });
+        };
+
+        /**
+         * View project-level changesets in OSMCha filtered by project AOI,
+         * creation date, and changeset comment -- or instead by custom filter
+         * id, if one has been set on the project
+         */
+        vm.viewProjectOSMCha = function() {
+            osmchaService.viewOSMCha({
+                filterId: vm.projectData.osmchaFilterId,
+                bbox: vm.projectData.aoiBBOX,
+                bboxSize: 2,  // Filter out global-scale changesets
+                startDate: moment.utc(vm.projectData.created),
+                comment: vm.projectData.changesetComment,
+            });
         };
 
         /**
@@ -1154,31 +1525,19 @@
             var queryPrefix = '<osm-script output="json" timeout="25"><union>';
             var querySuffix = '</union><print mode="body"/><recurse type="down"/><print mode="skeleton" order="quadtile"/></osm-script>';
             var queryMiddle = '';
+
             // Get the bbox of the task
-            var taskId = vm.selectedTaskData.taskId;
-            var features = vm.taskVectorLayer.getSource().getFeatures();
-            var selectedFeature = taskService.getTaskFeatureById(features, taskId);
-            var extent = selectedFeature.getGeometry().getExtent();
-            var bboxArray = geospatialService.transformExtentToLatLonArray(extent);
-            var bbox = 'w="' + bboxArray[0] + '" s="' + bboxArray[1] + '" e="' + bboxArray[2] + '" n="' + bboxArray[3] + '"';
-            // Loop through the history and get a unique list of users to pass to Overpass Turbo
-            var userList = [];
-            var history = vm.selectedTaskData.taskHistory;
-            if (history) {
-                for (var i = 0; i < history.length; i++) {
-                    var user = history[i].actionBy;
-                    var indexInArray = userList.indexOf(user);
-                    if (user && indexInArray == -1) {
-                        // user existing and not found in user list yet
-                        var userQuery =
-                            '<query type="node"><user name="' + user + '"/><bbox-query ' + bbox + '/></query>' +
-                            '<query type="way"><user name="' + user + '"/><bbox-query ' + bbox + '/></query>' +
-                            '<query type="relation"><user name="' + user + '"/><bbox-query ' + bbox + '/></query>';
-                        queryMiddle = queryMiddle + userQuery;
-                        userList.push(user);
-                    }
-                }
-            }
+            var bboxArray = vm.overpassBBox();
+            var bbox = 's="' + bboxArray[0] + '" w="' + bboxArray[1] + '" n="' + bboxArray[2] + '" e="' + bboxArray[3] + '"';
+
+            // Add (bounded) work by participating users to query
+            vm.participantUsernames().forEach(function(user) {
+              queryMiddle = queryMiddle +
+                  '<query type="node"><user name="' + user + '"/><bbox-query ' + bbox + '/></query>' +
+                  '<query type="way"><user name="' + user + '"/><bbox-query ' + bbox + '/></query>' +
+                  '<query type="relation"><user name="' + user + '"/><bbox-query ' + bbox + '/></query>';
+            });
+
             var query = queryPrefix + queryMiddle + querySuffix;
             $window.open('http://overpass-turbo.eu/map.html?Q=' + encodeURIComponent(query));
         };
@@ -1226,23 +1585,23 @@
                         mime_type: encodeURIComponent('application/x-osm+xml'),
                         layer_name: encodeURIComponent('Task Boundaries #' + vm.projectData.projectId + '- Do not edit or upload'),
                         data: encodeURIComponent('<?xml version="1.0" encoding="utf8"?><osm generator="JOSM" upload="never" version="0.6"></osm>')
-                    }
-                    var isEmptyTaskLayerSuccess = editorService.sendJOSMCmd('http://127.0.0.1:8111/load_data', emptyTaskLayerParams);
-                    if (!isEmptyTaskLayerSuccess) {
-                        //warn that JSOM couldn't be started
-                        vm.editorStartError = 'josm-error';
-                    }
+                    };
+                    editorService.sendJOSMCmd('http://127.0.0.1:8111/load_data', emptyTaskLayerParams)
+                        .catch(function() {
+                            //warn that JSOM couldn't be started
+                            vm.editorStartError = 'josm-error';
+                        });
 
                     //load task square(s) into JOSM
                     var taskImportParams = {
                         url: editorService.getOSMXMLUrl(vm.projectData.projectId, vm.getSelectTaskIds()),
                         new_layer: false
-                    }
-                    var isTaskImportSuccess = editorService.sendJOSMCmd('http://127.0.0.1:8111/import', taskImportParams);
-                    if (!isTaskImportSuccess) {
-                        //warn that JSOM couldn't be started
-                        vm.editorStartError = 'josm-error';
-                    }
+                    };
+                    editorService.sendJOSMCmd('http://127.0.0.1:8111/import', taskImportParams)
+                        .catch(function() {
+                            //warn that JSOM couldn't be started
+                            vm.editorStartError = 'josm-error';
+                        });
                 }
 
                 //load aerial photography if present
@@ -1258,11 +1617,11 @@
                         type: imageryUrl.toLowerCase().substring(0, 3),
                         url: encodeURIComponent(imageryUrl)
                     };
-                    var isImagerySuccess = editorService.sendJOSMCmd('http://127.0.0.1:8111/imagery', imageryParams);
-                    if (!isImagerySuccess) {
-                        //warn that imagery couldn't be loaded
-                        vm.editorStartError = 'josm-imagery-error';
-                    }
+                    editorService.sendJOSMCmd('http://127.0.0.1:8111/imagery', imageryParams)
+                        .catch(function() {
+                            //warn that imagery couldn't be loaded
+                            vm.editorStartError = 'josm-imagery-error';
+                        });
                 }
 
                 // load a new empty layer in josm for osm data, this step necessary to have a custom name for the layer
@@ -1273,11 +1632,11 @@
                     layer_name: 'OSM Data',
                     data: encodeURIComponent('<?xml version="1.0" encoding="utf8"?><osm generator="JOSM" version="0.6"></osm>')
                 }
-                var isEmptyOSMLayerSuccess = editorService.sendJOSMCmd('http://127.0.0.1:8111/load_data', emptyOSMLayerParams);
-                if (!isEmptyOSMLayerSuccess) {
-                    //warn that JSOM couldn't be started
-                    vm.editorStartError = 'josm-error';
-                }
+                editorService.sendJOSMCmd('http://127.0.0.1:8111/load_data', emptyOSMLayerParams)
+                    .catch(function() {
+                        //warn that JSOM couldn't be started
+                        vm.editorStartError = 'josm-error';
+                    });
 
                 var loadAndZoomParams = {
                     left: extentTransformed[0],
@@ -1298,6 +1657,163 @@
                 }
 
             }
+        };
+
+        /**
+         * Get the task bounding box, transforming to SWNE (min lat, min lon, max lat, max lon) array
+         * as preferred by Overpass.
+         */
+        vm.overpassBBox = function() {
+            var arrayBBox = geospatialService.transformExtentToLatLonArray(vm.taskBBox());
+
+            // Transform WSEN to SWNE that Overpass prefers
+            return [arrayBBox[1], arrayBBox[0], arrayBBox[3], arrayBBox[2]];
+        }
+
+        /**
+         * Returns an array of unique usernames of users who appear in the selected task history.
+         */
+        vm.participantUsernames = function() {
+            // Loop through the history and get a unique list of users to pass to Overpass Turbo
+            var userList = [];
+            var history = vm.selectedTaskData.taskHistory;
+            if (history) {
+                for (var i = 0; i < history.length; i++) {
+                    var username = history[i].actionBy;
+                    if (username && userList.indexOf(username) === -1) {
+                        // user existing and not found in user list yet
+                        userList.push(username);
+                    }
+                }
+            }
+
+            return userList;
+        }
+
+        /**
+         * Inspects the task history of the currently selected task and, if
+         * available, returns a moment instance representing the earliest
+         * action date in the history or null otherwise
+         */
+        vm.earliestHistoryActionDate = function() {
+            var history = vm.selectedTaskData.taskHistory;
+            if (history && history.length > 0) {
+                return moment.min(history.map(function(entry) {
+                    return moment.utc(entry.actionDate);
+                }));
+            }
+
+            return null;
+        };
+
+        /**
+         * Returns a Moment instance representing the action date of the given
+         * item. For non-locking actions, the timestamp is offset by the
+         * configured `atticQueryOffsetMinutes` number of minutes. No offset
+         * is applied for locking actions.
+         *
+         * @param atticDate
+         */
+        vm.offsetAtticDateMoment = function (item) {
+          if (item.action === 'LOCKED_FOR_MAPPING' || item.action === 'LOCKED_FOR_VALIDATION') {
+            return moment.utc(item.actionDate);
+          }
+
+          return moment.utc(item.actionDate).add(configService.atticQueryOffsetMinutes, 'minutes');
+        }
+
+        /**
+         * Returns true if the given attic date, once offset by the configured
+         * `atticQueryOffsetMinutes` number of minutes, represents a date in
+         * the past that can be queried. Returns false if the date is still in
+         * the future.
+         * @param atticDate
+         */
+        vm.isAtticDateLive = function (item) {
+          return vm.offsetAtticDateMoment(item).isSameOrBefore(moment());
+        }
+
+        /**
+         * View the task AOI as of the given date via Overpass attic query.
+         * @param atticDate
+         */
+        vm.viewAtticOverpass = function (item) {
+          var adjustedDateString = vm.offsetAtticDateMoment(item).toISOString();
+          var bbox = vm.overpassBBox().join(',');
+          var query =
+            '[out:xml][timeout:25][bbox:' + bbox + '][date:"' + adjustedDateString + '"];' +
+            '( node(' + bbox + '); <; >; );' +
+            'out meta;';
+
+
+          // Try sending to JOSM if it's user's chosen editor, otherwise Overpass Turbo.
+          var overpassApiURL = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+          if (vm.selectedMappingEditor === 'josm' || vm.selectedValidationEditor === 'josm') {
+            editorService.sendJOSMCmd('http://127.0.0.1:8111/import', {
+                                        new_layer: 'true',
+                                        layer_name: adjustedDateString,
+                                        layer_locked: 'true',
+                                        url: encodeURIComponent(overpassApiURL)
+                                      }
+            ).catch(function() {
+              //warn that JSOM couldn't be contacted
+              vm.editorStartError = 'josm-error';
+            });
+          }
+          else {
+              var overpassTurboURL = 'https://overpass-turbo.eu/map.html?Q=' + encodeURIComponent(query);
+              $window.open(overpassTurboURL);
+          }
+        };
+
+        /**
+         * Selects the given item for augmented diffing. If it's the first item,
+         * it becomes selected; if it's the second item, a diff is kicked off. If the
+         * same item is clicked twice, then an attic query is run for the item.
+         */
+        vm.selectItemForDiff = function(item) {
+          if (vm.selectedItem === null) {
+            vm.selectedItem = item;
+          }
+          else {
+            if (vm.selectedItem !== item) {
+              vm.viewAugmentedDiff(vm.selectedItem, item);
+            }
+            else {
+              vm.viewAtticOverpass(item);
+            }
+
+            vm.selectedItem = null;
+          }
+        }
+
+        /**
+         * View augmented diff in achavi of the task AOI for the two given items
+         * @param firstItem
+         * @param secondItem
+         */
+        vm.viewAugmentedDiff = function (firstItem, secondItem) {
+          // order firstItem and secondItem into earlierItem and laterItem
+          var earlierItem = firstItem;
+          var laterItem = secondItem;
+
+          if (moment.utc(firstItem.actionDate).isAfter(moment.utc(secondItem.actionDate))) {
+            earlierItem = secondItem;
+            laterItem = firstItem;
+          }
+
+          var bbox = vm.overpassBBox().join(',');
+          var query =
+            '[out:xml][timeout:25][bbox:' + bbox + ']' +
+            '[adiff:"' + moment.utc(earlierItem.actionDate).toISOString() + '","' +
+                         vm.offsetAtticDateMoment(laterItem).toISOString() + '"];' +
+            '( node(' + bbox + '); <; >; );' +
+            'out meta geom qt;';
+
+          // Send users to achavi for visualization of augmented diff
+          var overpassURL = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+          var achaviURL = 'https://overpass-api.de/achavi/?url=' + encodeURIComponent(overpassURL);
+          $window.open(achaviURL);
         };
 
         /**
@@ -1406,7 +1922,7 @@
         };
 
         /**
-         * Higlights the set of tasks on the map
+         * Highlights the set of tasks on the map
          * @param doneTaskIds - array of task ids
          */
         vm.highlightTasks = function (doneTaskIds) {
@@ -1454,9 +1970,11 @@
                 vm.multiSelectedTasksData = tasks;
                 vm.multiLockedTasks = tasks;
                 vm.isSelectedValidatable = true;
-
+                vm.multiLockedTasks.forEach(function(task) {
+                    vm.lockTime[task.taskId] = getLastLockedAction(task).actionDate;
+                });
             }, function (error) {
-                onLockError(vm.projectData.projectId, error)
+                onLockError(vm.projectData.projectId, error);
             });
         };
 
@@ -1500,17 +2018,18 @@
          * @param search
          */
         vm.searchUser = function (search) {
+            // If the search is empty, do nothing.
+            if (!search || search.length === 0) {
+              vm.suggestedUsers = [];
+              return $q.resolve(vm.suggestedUsers);
+            }
+
             // Search for a user by calling the API
-            var resultsPromise = userService.searchUser(search);
+            var resultsPromise = userService.searchUser(search, vm.projectData ? parseInt(vm.projectData.projectId, 10) : null);
             return resultsPromise.then(function (data) {
                 // On success
-                vm.usernames = [];
-                if (data.usernames) {
-                    for (var i = 0; i < data.usernames.length; i++) {
-                        vm.usernames.push({'label': data.usernames[i]});
-                    }
-                }
-                return data.usernames;
+                vm.suggestedUsers = data.users;
+                return vm.suggestedUsers;
             }, function () {
                 // On error
             });
@@ -1523,7 +2042,40 @@
         vm.formatUserTag = function (item) {
             // Format the user tag by wrapping into brackets so it is easier to detect that it is a username
             // especially when there are spaces in the username
-            return '@[' + item.label + ']';
+            return '@[' + item.username + ']';
+        };
+
+        /**
+         * Creates json objects for editors 
+         * @params editors
+         */
+        function createEditorList(editors) {
+            var result = [];
+            if (editors.includes("ID")) {
+                result.push({
+                    "name": "iD Editor",
+                    "value": "ideditor"
+                });
+            }
+            if (editors.includes("JOSM")) {
+                result.push({
+                    "name": "JOSM",
+                    "value": "josm"
+                });
+            }
+            if (editors.includes("POTLATCH_2")) {
+                result.push({
+                    "name": "Potlatch 2",
+                    "value": "potlatch2"
+                });
+            }
+            if (editors.includes("FIELD_PAPERS")) {
+                result.push({
+                    "name": "Field Papers",
+                    "value": "fieldpapers"
+                });
+            }
+            return result;
         };
     }
 })
